@@ -1,321 +1,191 @@
 #!/usr/bin/env python3
-"""Hindsight 应用服务：管理界面 + 接口转发。
+"""Hindsight 入口服务：把官方管理控制台搬到本机，并统一两个入口。
 
-同时监听两个入口：
-  * Unix socket —— 应用中心内嵌（/app/Hindsight/），网关把前缀原样透传
-  * TCP 端口   —— 内网直连（默认 9999）
+控制台（Control Plane）是上游自带的 Next.js 应用，只能绑本机回环地址
+（它用绑定地址做同源校验，绑 0.0.0.0 会让每个页面重定向到自己）。所以：
 
-页面用同源相对路径请求本服务，由本服务再去访问本机 API，
-这样无论从应用中心打开还是内网直连，都不需要浏览器能直连 API 端口。
+    Control Plane  → 127.0.0.1:<CP_PORT>
+    本服务         → Unix socket（应用中心内嵌） + 0.0.0.0:<UI_PORT>（内网直连）
+                                       ↓ 反向代理，含流式响应
+                                 127.0.0.1:<CP_PORT>
 
 用法：serve.py <socket 路径>
 环境变量：
-  HINDSIGHT_API_PORT   API 端口（默认 8888）
-  HINDSIGHT_UI_PORT    内网直连端口（默认 9999）
-  HINDSIGHT_APP_NAME   应用名（默认 Hindsight）
+  HINDSIGHT_CP_PORT    控制台内部端口（默认 9998）
+  HINDSIGHT_UI_PORT     对外端口（默认 9999）
+  HINDSIGHT_APP_NAME    应用名（默认 Hindsight）
 """
 from __future__ import annotations
 
 import http.client
 import http.server
-import json
 import os
-import re
 import socketserver
 import sys
 import threading
-import urllib.parse
 
-BASE = os.path.dirname(os.path.abspath(__file__))
-API_HOST = "127.0.0.1"
-API_PORT = int(os.environ.get("HINDSIGHT_API_PORT", "8888"))
+CP_HOST = "127.0.0.1"
+CP_PORT = int(os.environ.get("HINDSIGHT_CP_PORT", "9998"))
 UI_PORT = int(os.environ.get("HINDSIGHT_UI_PORT", "9999"))
 APP_NAME = os.environ.get("HINDSIGHT_APP_NAME", "Hindsight")
+CP_AVAILABLE = os.environ.get("HINDSIGHT_CP_AVAILABLE", "1") != "0"
 MOUNT = "/app/" + APP_NAME
 
+# 上游会拿绑定地址做同源比较，Host 头必须与它看到的一致
+CP_HOST_HEADER = "localhost:%d" % CP_PORT
 
-def api_call(method: str, path: str, body=None, timeout: int = 120):
-    """访问本机 Hindsight API，返回 (status, bytes, content_type)。"""
-    data = None
-    headers = {"Accept": "application/json"}
-    if body is not None:
-        data = json.dumps(body).encode()
-        headers["Content-Type"] = "application/json"
-    conn = http.client.HTTPConnection(API_HOST, API_PORT, timeout=timeout)
-    try:
-        conn.request(method, path, body=data, headers=headers)
-        resp = conn.getresponse()
-        return resp.status, resp.read(), resp.getheader(
-            "Content-Type", "application/octet-stream"
-        )
-    finally:
-        conn.close()
+HOP_BY_HOP = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+}
 
-
-def api_json(method: str, path: str, body=None, timeout: int = 120):
-    """返回 (json, error)。错误统一成字符串，方便直接回给页面。"""
-    try:
-        status, raw, _ = api_call(method, path, body, timeout)
-    except Exception as exc:  # noqa: BLE001
-        return None, str(exc)
-    if status >= 400:
-        return None, "HTTP %d" % status
-    try:
-        return json.loads(raw), None
-    except Exception:  # noqa: BLE001
-        return None, "响应格式异常"
-
-
-def pretty_text(raw: str) -> str:
-    """把存成对话记录形态的内容还原成可读文本。
-
-    摄入时有可能整段对话被当成一条内容存下来，直接显示会是一串带
-    引号和转义符的 JSON。这里只取其中的正文，其余形态原样返回。
-    """
-    s = (raw or "").strip()
-    if '"role"' not in s or '"content"' not in s:
-        return s
-
-    # 正常情况：整段就是一个 JSON 数组/对象
-    body = s
-    if not (body.startswith("[") or body.startswith("{")):
-        starts = [i for i in (body.find("["), body.find("{")) if i >= 0]
-        if not starts:
-            return s
-        body = body[min(starts):]
-    try:
-        parsed = json.loads(body)
-    except Exception:  # noqa: BLE001
-        parsed = None
-
-    parts = []
-
-    def collect(node):
-        if isinstance(node, dict):
-            c = node.get("content")
-            if isinstance(c, str) and c.strip():
-                parts.append(c.strip())
-        elif isinstance(node, list):
-            for x in node:
-                collect(x)
-
-    if parsed is not None:
-        collect(parsed)
-        if parts:
-            return "\n\n".join(parts)
-
-    # 兜底：从残缺的内容里挨个抠出 content 字段
-    for m in re.finditer(r'"content"\s*:\s*"((?:[^"\\]|\\.)*)"', s):
-        try:
-            text = json.loads('"' + m.group(1) + '"')
-        except Exception:  # noqa: BLE001
-            continue
-        if text.strip():
-            parts.append(text.strip())
-    return "\n\n".join(parts) if parts else s
+MISSING_NODE_PAGE = """<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hindsight 管理界面需要 Node.js</title>
+<style>
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:#eef2f2;
+color:#16211f;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;padding:24px}
+.c{max-width:560px;padding:28px 30px;border-radius:18px;background:#fff;
+box-shadow:0 18px 50px rgba(16,40,38,.10)}
+h1{margin:0 0 10px;font-size:17px;font-weight:600}
+p{margin:0 0 10px;font-size:13.5px;line-height:1.75;color:#5c6f6c}
+code{background:#f1f5f4;padding:1px 6px;border-radius:6px;font-size:12.5px}
+ul{margin:6px 0 0;padding-left:18px;font-size:13px;line-height:1.9;color:#5c6f6c}
+</style></head><body><div class="c">
+<h1>管理界面需要 Node.js</h1>
+<p>本机的记忆服务已在正常运行，接口文档也可以正常访问。只有管理界面需要 Node.js 运行时。</p>
+<p>处理方式：在应用中心安装 <b>Node.js</b>（v22 或 v24 均可），然后回到应用中心把本应用「停止」再「启动」，无需重装、数据不动。</p>
+<ul>
+<li>记忆服务：<code>http://&lt;NAS地址&gt;:API端口/docs</code></li>
+<li>已装 Node.js 后本页会自动变成管理界面</li>
+</ul>
+</div></body></html>"""
 
 
-class Handler(http.server.SimpleHTTPRequestHandler):
+STARTING_PAGE = """<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hindsight 正在启动</title>
+<style>
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:#eef2f2;
+color:#16211f;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+.c{padding:30px 34px;border-radius:18px;background:#fff;box-shadow:0 18px 50px rgba(16,40,38,.10);text-align:center}
+h1{margin:0 0 8px;font-size:17px;font-weight:600}
+p{margin:0;font-size:13px;color:#5c6f6c}
+</style></head><body><div class="c"><h1>Hindsight 正在启动</h1>
+<p>控制台还没就绪，本页 5 秒后自动重试。</p></div>
+<script>setTimeout(function(){location.reload()},5000)</script></body></html>"""
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=BASE, **kwargs)
+    server_version = "hindsight-ui"
 
     def log_message(self, format, *args):  # noqa: A002
         sys.stderr.write("ui - %s\n" % (format % args))
 
-    # ── 路径处理 ──────────────────────────────────────────────
-    def _strip_mount(self) -> str:
-        path, sep, query = self.path.partition("?")
-        if path.startswith(MOUNT):
-            path = path[len(MOUNT):] or "/"
-        elif path.startswith("/app/"):
-            rest = path[len("/app/"):]
+    # ── 路径：剥掉网关挂载前缀 ────────────────────────────────
+    def _path(self) -> str:
+        raw = self.path
+        if raw.startswith(MOUNT):
+            rest = raw[len(MOUNT):]
+            return rest or "/"
+        if raw.startswith("/app/"):
+            rest = raw[len("/app/"):]
             cut = rest.find("/")
-            path = "/" if cut < 0 else rest[cut:]
-        self.path = path + (("?" + query) if sep else "")
-        return path
+            return "/" if cut < 0 else rest[cut:]
+        return raw or "/"
 
-    def _query(self) -> dict:
-        q = urllib.parse.urlparse(self.path).query
-        return {k: v[-1] for k, v in urllib.parse.parse_qs(q).items()}
+    def _starting(self):
+        body = (STARTING_PAGE if CP_AVAILABLE else MISSING_NODE_PAGE).encode()
+        self.send_response(503)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        if CP_AVAILABLE:
+            self.send_header("Retry-After", "5")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
 
-    # ── 各方法 ────────────────────────────────────────────────
-    def do_GET(self):
-        raw = self.path.split("?", 1)[0]
-        if raw == MOUNT:  # 少了结尾斜杠，页面里的相对路径会算错
-            self.send_response(301)
-            self.send_header("Location", MOUNT + "/")
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-            return
-        path = self._strip_mount()
-        if path == "/api/overview":
-            return self._overview()
-        if path == "/api/memories":
-            return self._memories()
-        if path == "/api/memory":
-            return self._memory()
-        if path == "/api/health":
-            return self._health()
-        if path.startswith("/backend/"):
-            return self._proxy()
-        if path in ("/", "/index.html", "/index.htm"):
-            self.path = "/index.html"
-        return super().do_GET()
-
-    def do_HEAD(self):
-        self._strip_mount()
-        if self.path.startswith("/backend/"):
-            return self._proxy()
-        return super().do_HEAD()
-
-    def do_POST(self):
-        self._strip_mount()
-        if self.path.startswith("/backend/"):
-            return self._proxy()
-        self.send_error(405)
-
-    do_PUT = do_PATCH = do_DELETE = do_POST
-
-    # ── 业务接口 ──────────────────────────────────────────────
-    def _overview(self):
-        banks, err = api_json("GET", "/v1/default/banks", timeout=20)
-        if err:
-            return self._json({"ok": False, "error": err}, 502)
-        out = []
-        for b in banks.get("banks") or []:
-            out.append(
-                {
-                    "id": b.get("bank_id"),
-                    "name": b.get("name") or b.get("bank_id"),
-                    "mission": b.get("mission") or "",
-                    "facts": b.get("fact_count") or 0,
-                    "last_write": b.get("last_write_at"),
-                }
-            )
-        return self._json({"ok": True, "banks": out})
-
-    def _memories(self):
-        q = self._query()
-        bank = q.get("bank") or ""
-        if not bank:
-            return self._json({"ok": False, "error": "缺少 bank"}, 400)
-        params = {"limit": q.get("limit", "50"), "offset": q.get("offset", "0")}
-        for key in ("q", "type", "state"):
-            if q.get(key):
-                params[key] = q[key]
-        path = "/v1/default/banks/%s/memories/list?%s" % (
-            urllib.parse.quote(bank, safe=""),
-            urllib.parse.urlencode(params),
-        )
-        data, err = api_json("GET", path, timeout=60)
-        if err:
-            return self._json({"ok": False, "error": err}, 502)
-        items = []
-        for m in data.get("items") or []:
-            items.append(
-                {
-                    "id": m.get("id"),
-                    "text": pretty_text(m.get("text") or ""),
-                    "fact_type": m.get("fact_type"),
-                    "date": m.get("date") or m.get("mentioned_at"),
-                    "entities": m.get("entities") or [],
-                    "document_id": m.get("document_id"),
-                    "context": m.get("context") or "",
-                }
-            )
-        return self._json(
-            {"ok": True, "total": data.get("total") or 0, "items": items}
-        )
-
-    def _memory(self):
-        q = self._query()
-        bank, mid = q.get("bank") or "", q.get("id") or ""
-        if not bank or not mid:
-            return self._json({"ok": False, "error": "缺少参数"}, 400)
-        path = "/v1/default/banks/%s/memories/%s" % (
-            urllib.parse.quote(bank, safe=""),
-            urllib.parse.quote(mid, safe=""),
-        )
-        data, err = api_json("GET", path, timeout=30)
-        if err:
-            return self._json({"ok": False, "error": err}, 502)
-        return self._json({"ok": True, "memory": data})
-
-    def _health(self):
-        try:
-            status, _, _ = api_call("GET", "/health", timeout=5)
-            ok = status == 200
-        except Exception:  # noqa: BLE001
-            ok = False
-        return self._json({"ok": ok, "api_port": API_PORT, "ui_port": UI_PORT})
-
-    # ── 接口转发（接口文档用）────────────────────────────────
+    # ── 转发 ──────────────────────────────────────────────────
     def _proxy(self):
-        sub = self.path[len("/backend"):] or "/"
+        path = self._path()
+        mounted = self.path.startswith(MOUNT) or self.path.startswith("/app/")
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else None
-        headers = {
-            k: v
-            for k, v in self.headers.items()
-            if k.lower() not in ("host", "connection", "accept-encoding")
-        }
+
+        headers = {}
+        for k, v in self.headers.items():
+            if k.lower() in HOP_BY_HOP or k.lower() in ("host", "accept-encoding"):
+                continue
+            headers[k] = v
+        headers["Host"] = CP_HOST_HEADER
+
         conn = None
         try:
-            conn = http.client.HTTPConnection(API_HOST, API_PORT, timeout=120)
-            conn.request(self.command, sub, body=body, headers=headers)
+            conn = http.client.HTTPConnection(CP_HOST, CP_PORT, timeout=180)
+            conn.request(self.command, path, body=body, headers=headers)
             resp = conn.getresponse()
-            data = resp.read()
-            ctype = resp.getheader("Content-Type", "application/octet-stream")
-            status = resp.status
         except Exception as exc:  # noqa: BLE001
-            return self._json({"error": "后端不可达", "detail": str(exc)}, 502)
-        finally:
             if conn is not None:
                 try:
                     conn.close()
                 except Exception:  # noqa: BLE001
                     pass
+            sys.stderr.write("ui - 控制台不可达：%s\n" % exc)
+            return self._starting()
 
-        # 文档页把 openapi.json 写成绝对路径，转发后要改成相对，
-        # 否则会指到网关根路径上。
-        if ctype.startswith("text/html"):
-            text = data.decode("utf-8", "replace")
-            text = text.replace('"/openapi.json"', '"openapi.json"')
-            text = text.replace("'/openapi.json'", "'openapi.json'")
-            text = text.replace("/docs/oauth2-redirect", "oauth2-redirect")
-            data = text.encode("utf-8")
-        elif ctype.startswith("application/json") and sub.startswith("/openapi.json"):
+        try:
+            self.send_response(resp.status)
+            for k, v in resp.getheaders():
+                lk = k.lower()
+                if lk in HOP_BY_HOP or lk == "content-length":
+                    continue
+                if lk == "location" and mounted and v.startswith("/"):
+                    # 网关内嵌时，跳转必须带回挂载前缀，否则会跳到 NAS 根路径
+                    v = MOUNT + v
+                self.send_header(k, v)
+            clen = resp.getheader("Content-Length")
+            if clen:
+                self.send_header("Content-Length", clen)
+            elif self.command == "HEAD":
+                self.send_header("Content-Length", "0")
+            else:
+                # 长度未知：交回 HTTP/1.0 式关闭连接，边读边写
+                self.close_connection = True
+            self.end_headers()
+
+            if self.command != "HEAD":
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+        except Exception as exc:  # noqa: BLE001
+            sys.stderr.write("ui - 转发中断：%s\n" % exc)
+        finally:
             try:
-                doc = json.loads(data)
-                doc["servers"] = [{"url": MOUNT + "/backend"}]
-                data = json.dumps(doc, ensure_ascii=False).encode("utf-8")
+                conn.close()
             except Exception:  # noqa: BLE001
                 pass
 
-        self.send_response(status)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(data)
+    def _handle(self):
+        if self.path.split("?", 1)[0] == MOUNT:
+            # 少了结尾斜杠，页面里的相对路径会算错
+            self.send_response(301)
+            self.send_header("Location", MOUNT + "/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self._proxy()
 
-    # ── 工具 ──────────────────────────────────────────────────
-    def _json(self, obj, status: int = 200):
-        body = json.dumps(obj, ensure_ascii=False).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(body)
-
-    def end_headers(self):
-        self.send_header("X-Content-Type-Options", "nosniff")
-        super().end_headers()
+    do_GET = do_HEAD = do_POST = do_PUT = do_PATCH = do_DELETE = do_OPTIONS = _handle
 
 
 class UnixHTTPServer(socketserver.ThreadingUnixStreamServer):
@@ -356,8 +226,7 @@ def main() -> int:
         listen = "(仅 socket)"
 
     sys.stderr.write(
-        "ui: socket=%s  listen=%s  api=%s:%d\n"
-        % (sock_path, listen, API_HOST, API_PORT)
+        "ui: socket=%s  listen=%s  ->  %s:%d\n" % (sock_path, listen, CP_HOST, CP_PORT)
     )
     try:
         threading.Event().wait()

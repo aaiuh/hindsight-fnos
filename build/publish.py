@@ -37,6 +37,7 @@ def main() -> int:
         "changelog": (
             f"跟随上游 Hindsight {ver}。原生运行，不依赖 Docker；"
             "内置 PostgreSQL 与向量检索，onnx 语义嵌入 + flashrank 重排；"
+            "含官方管理控制台（需系统已装 Node.js 20 以上）；"
             "支持飞牛应用备份与恢复。"
         ),
         "updated_at": datetime.date.today().isoformat(),

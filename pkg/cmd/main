@@ -18,6 +18,12 @@ UI_PID_FILE="${APP_HOME}/ui.pid"
 UI_LOG="${APP_HOME}/ui.log"
 UI_PY="${RUNTIME}/python/bin/python3"
 UI_SRC="${TRIM_APPDEST}/ui/serve.py"
+# 官方管理控制台（上游发布物原样放入运行时目录），需要系统已有 Node.js
+CP_DIR="${RUNTIME}/control-plane"
+CP_PORT="${HINDSIGHT_CP_PORT:-9998}"
+CP_PID_FILE="${APP_HOME}/cp.pid"
+CP_LOG="${APP_HOME}/cp.log"
+NODE_BIN=""
 
 is_running() {
     [ -f "$PID_FILE" ] || return 1
@@ -25,6 +31,84 @@ is_running() {
     pid=$(cat "$PID_FILE" 2>/dev/null)
     [ -n "$pid" ] || return 1
     kill -0 "$pid" 2>/dev/null
+}
+
+# 复用系统里已装的 Node.js：应用中心的 Node.js 应用、或 PATH 里的 node。
+# 不随包分发 Node，缺了就在界面上提示去装，而不是把 100+ MB 塞给别人。
+find_node() {
+    local c major
+    for c in "${HINDSIGHT_NODE:-}" \
+             /var/apps/nodejs_v24/target/bin/node \
+             /var/apps/nodejs_v22/target/bin/node \
+             /vol1/@appcenter/nodejs_v24/bin/node \
+             /vol1/@appcenter/nodejs_v22/bin/node \
+             "$(command -v node 2>/dev/null || true)" \
+             "$(command -v nodejs 2>/dev/null || true)"; do
+        [ -n "$c" ] || continue
+        [ -x "$c" ] || continue
+        major=$("$c" -e 'process.stdout.write(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)
+        [ "${major:-0}" -ge 20 ] 2>/dev/null || continue
+        echo "$c"
+        return 0
+    done
+    return 1
+}
+
+cp_running() {
+    [ -f "$CP_PID_FILE" ] || return 1
+    local pid
+    pid=$(cat "$CP_PID_FILE" 2>/dev/null)
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+stop_cp() {
+    if cp_running; then
+        local pid
+        pid=$(cat "$CP_PID_FILE")
+        pkill -P "$pid" 2>/dev/null || true
+        kill "$pid" 2>/dev/null || true
+        sleep 2
+        pkill -P "$pid" 2>/dev/null || true
+        kill -9 "$pid" 2>/dev/null || true
+    fi
+    rm -f "$CP_PID_FILE"
+    return 0
+}
+
+start_cp() {
+    if [ ! -f "${CP_DIR}/server.js" ]; then
+        echo "未找到管理控制台，跳过（API 与接口文档不受影响）"
+        return 1
+    fi
+    if ! NODE_BIN=$(find_node); then
+        echo "未找到 Node.js（需要 20 及以上）——管理界面不可用。" >&2
+        echo "在应用中心安装 Node.js 后重启本应用即可，无需重装。" >&2
+        return 1
+    fi
+    stop_cp
+    (
+        cd "$CP_DIR" || exit 1
+        HOSTNAME=localhost \
+        PORT="$CP_PORT" \
+        NODE_OPTIONS="--dns-result-order=ipv4first" \
+        NODE_ENV=production \
+        HINDSIGHT_CP_DATAPLANE_API_URL="http://127.0.0.1:${HINDSIGHT_API_PORT}" \
+        nohup "$NODE_BIN" server.js >> "$CP_LOG" 2>&1 &
+        echo $! > "$CP_PID_FILE"
+    )
+    local i
+    for i in $(seq 1 60); do
+        if curl -fsS "http://127.0.0.1:${CP_PORT}/api/health" >/dev/null 2>&1; then
+            echo "管理控制台已启动（node $("$NODE_BIN" -v 2>/dev/null)，端口 ${CP_PORT}）"
+            return 0
+        fi
+        cp_running || break
+        sleep 1
+    done
+    echo "管理控制台启动失败，详情见 $CP_LOG" >&2
+    tail -5 "$CP_LOG" >&2 2>/dev/null || true
+    return 1
 }
 
 ui_running() {
@@ -50,6 +134,8 @@ start_ui() {
     stop_ui
     HINDSIGHT_API_PORT="${HINDSIGHT_API_PORT}" \
     HINDSIGHT_UI_PORT="${HINDSIGHT_UI_PORT:-9999}" \
+    HINDSIGHT_CP_PORT="${CP_PORT}" \
+    HINDSIGHT_CP_AVAILABLE="${CP_AVAILABLE:-0}" \
     HINDSIGHT_APP_NAME="Hindsight" \
         nohup "$UI_PY" "$UI_SRC" "$UI_SOCK" >> "$UI_LOG" 2>&1 &
     echo $! > "$UI_PID_FILE"
@@ -169,6 +255,7 @@ start_service() {
     for _ in $(seq 1 90); do
         if curl -fsS "http://127.0.0.1:${HINDSIGHT_API_PORT}/health" >/dev/null 2>&1; then
             echo "Hindsight 启动完成"
+            if start_cp; then CP_AVAILABLE=1; else CP_AVAILABLE=0; fi
             start_ui
             return 0
         fi
@@ -187,6 +274,7 @@ stop_service() {
     if ! is_running; then
         echo "Hindsight 未在运行"
         rm -f "$PID_FILE"
+        stop_cp
         stop_ui
         return 0
     fi
@@ -201,6 +289,7 @@ stop_service() {
     kill -9 "$pid" 2>/dev/null
     pkill -P "$pid" 2>/dev/null
     rm -f "$PID_FILE"
+    stop_cp
     stop_ui
 
     # 嵌入式 postgres 由 API 托管，异常退出时可能残留

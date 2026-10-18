@@ -9,6 +9,9 @@
 | 组件 | 版本 | 许可 | 说明 |
 |---|---|---|---|
 | Hindsight（`hindsight-api` / `hindsight-api-slim`） | 见 `fnpack.json` | MIT · Vectorize AI, Inc. | 上游本体，PyPI 官方发布包，未改动 |
+| Hindsight 管理控制台（`@vectorize-io/hindsight-control-plane`） | 0.10.3 | MIT · Vectorize AI, Inc. | 取自上游官方容器镜像 `/app/control-plane`，原样打包，未修改 |
+| Next.js（控制台运行框架） | 16.4.0 | MIT | 随控制台一起分发 |
+| 控制台前端依赖（React 等，`node_modules`） | 随控制台 | MIT / Apache-2.0 / ISC | 见控制台目录内各包的 `package.json` 与 `LICENSE` |
 | Python（python-build-standalone） | 3.12 | PSF-2.0 | 随包自带的解释器 |
 | PostgreSQL | 18.1 | PostgreSQL License | 嵌入式数据库二进制 |
 | pgvector | — | PostgreSQL License | 向量检索扩展 |
@@ -17,6 +20,13 @@
 | flashrank | 0.2.10 | Apache-2.0 | 本地重排 |
 | multilingual-e5-small | — | MIT | 语义嵌入模型（intfloat） |
 | ms-marco-MiniLM-L-12-v2 | — | Apache-2.0 | 重排模型（prithivida/flashrank 分发） |
+
+## 未随包分发的运行依赖
+
+| 依赖 | 说明 |
+|---|---|
+| **Node.js（≥ 20，建议 22 / 24）** | 管理控制台需要它执行。**不随包分发**，运行时优先使用飞牛应用中心已安装的 Node.js 应用，其次使用系统 PATH 中的 `node`；两者的许可与版本由使用者自行安装的组件决定 |
+| 大模型服务 | 事实抽取需要使用者自行提供的 OpenAI 兼容服务，不在本项目分发范围内 |
 
 ## 其余依赖
 

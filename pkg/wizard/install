@@ -33,6 +33,20 @@
     ]
   },
   {
+    "stepTitle": "依赖检查",
+    "items": [
+      {
+        "type": "tips",
+        "field": "dependency_tip",
+        "label": "需要 Node.js（仅管理界面用）",
+        "rules": [],
+        "options": [],
+        "helpText": "管理界面需要 Node.js 20 及以上版本（建议 22 或 24），本应用不随包携带。请先在应用中心安装 Node.js 应用；已安装的会直接复用，无需额外配置。未安装也能正常安装本应用：记忆服务与 REST/MCP 接口照常工作，只有管理界面会显示提示页；装好 Node.js 后把本应用停止再启动即可生效，不必重装、数据不动。",
+        "initValue": ""
+      }
+    ]
+  },
+  {
     "stepTitle": "安装说明",
     "items": [
       {
@@ -41,7 +55,7 @@
         "label": "安装需要下载运行时",
         "rules": [],
         "options": [],
-        "helpText": "安装时会自动下载约 620 MB 运行时（自带 Python、语义模型与嵌入式 PostgreSQL），按国内镜像优先的顺序尝试。数据将保存到 /vol1/@appdata/Hindsight，卸载时默认保留。装完服务即可启动；要真正抽取记忆，还需在 hindsight.env 里填一个 OpenAI 兼容的大模型地址（默认未配置）。",
+        "helpText": "安装时会自动下载约 680 MB 运行时（自带 Python、语义模型、嵌入式 PostgreSQL 与官方管理控制台），按国内镜像优先的顺序尝试。数据将保存到 /vol1/@appdata/Hindsight，卸载时默认保留。装完服务即可启动；要真正抽取记忆，还需在 hindsight.env 里填一个 OpenAI 兼容的大模型地址（默认未配置）。",
         "initValue": ""
       }
     ]

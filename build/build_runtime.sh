@@ -60,6 +60,29 @@ FR_DIR="$(find "$WORK/fr" -maxdepth 2 -name "flashrank-*.onnx" -printf '%h\n' | 
 mv "$FR_DIR" "$RUNTIME/flashrank/ms-marco-MiniLM-L-12-v2"
 ls "$RUNTIME/flashrank/ms-marco-MiniLM-L-12-v2" | sed 's/^/    /'
 
+# ── 4b. 官方管理控制台：从上游镜像原样取出，不做任何改动 ─────────────────
+# 控制台是上游发布的 Next.js 产物，随包分发的只是这份产物；
+# 运行它需要系统已装 Node.js（见 NOTICE.md「运行依赖」）。
+say "取官方管理控制台（upstream 镜像内的 control-plane，原样复制）"
+CP_IMAGE="${CP_IMAGE:-ghcr.io/vectorize-io/hindsight:latest}"
+if command -v docker >/dev/null 2>&1; then
+    docker pull -q "$CP_IMAGE" >/dev/null
+    CP_CID="$(docker create "$CP_IMAGE")"
+    mkdir -p "$RUNTIME/control-plane"
+    docker cp "$CP_CID:/app/control-plane/." "$RUNTIME/control-plane/"
+    CP_DIGEST="$(docker inspect "$CP_IMAGE" --format '{{range .RepoDigests}}{{println .}}{{end}}' | head -1)"
+    docker rm "$CP_CID" >/dev/null
+    {
+        echo "image=$CP_IMAGE"
+        echo "digest=$CP_DIGEST"
+        echo "path=/app/control-plane"
+        echo "note=原样复制，未修改任何文件"
+    } > "$RUNTIME/control-plane-source.txt"
+    say "control-plane: $(du -sh "$RUNTIME/control-plane" | cut -f1)  （$CP_DIGEST）"
+else
+    say "构建环境没有 docker，跳过 control-plane（安装后管理界面会提示缺少控制台）"
+fi
+
 # ── 5. 首次启动：让它自己下嵌入模型、装嵌入式 pg（并当作冒烟测试）──────
 say "首次启动（下载嵌入模型 + 安装嵌入式 PostgreSQL，约 5–10 分钟）"
 export HOME="$WORK/home"
