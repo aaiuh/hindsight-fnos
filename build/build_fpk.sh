@@ -59,7 +59,7 @@ Hindsight 飞牛原生版
 备份：「应用中心 → 创建备份」勾选本应用。
 备份前会自动停服务，保证 PostgreSQL 数据一致。
 EOS
-tar -C "$APP" -czf "$STAGE/app.tgz" .
+( cd "$APP" && tar -czf "$STAGE/app.tgz" * )
 rm -rf "$APP"
 
 # fnOS 校验：manifest 的 checksum 必须是 app.tgz 的 md5，否则安装报 10111
@@ -73,7 +73,9 @@ echo "[fpk] app.tgz md5=$TGZ_MD5"
 
 FPK="$OUT/Hindsight-${VER}-x86.fpk"
 rm -f "$FPK"
-( cd "$STAGE" && tar --owner=0 --group=0 -cf "$FPK" \
+# 必须是 gzip 压缩的 tar：所有能装成功的 fpk 开头都是 1f 8b。
+# 未压缩的纯 tar 会被应用中心判成 10111（ErrCodePackageException）。
+( cd "$STAGE" && tar --owner=0 --group=0 -czf "$FPK" \
     manifest ICON.PNG ICON_256.PNG app.tgz cmd config defaults wizard )
 
 FPK_SHA=$(sha256sum "$FPK" | awk '{print $1}')
