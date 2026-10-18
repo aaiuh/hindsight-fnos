@@ -32,7 +32,7 @@ def main() -> int:
     # FnDepot 强制要求字符串 "2"，写成数字会直接同步失败
     doc["schema_version"] = "2"
 
-    app = doc["apps"]["hindsight"]
+    app = doc["apps"]["Hindsight"]
     app["releases"][ver] = {
         "changelog": (
             f"跟随上游 Hindsight {ver}。原生运行，不依赖 Docker；"

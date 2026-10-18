@@ -61,7 +61,7 @@ jobs:
           UP="${VER%%-*}"
           echo "包版本：$VER   上游版本：$UP"
 
-          PUBLISHED=$(python3 -c "import json;print('\n'.join(json.load(open('fnpack.json'))['apps']['hindsight']['releases']))")
+          PUBLISHED=$(python3 -c "import json;print('\n'.join(json.load(open('fnpack.json'))['apps']['Hindsight']['releases']))")
           echo "已发布：${PUBLISHED:-（无）}"
 
           if [ "${{ inputs.force }}" = "true" ]; then
