@@ -20,6 +20,7 @@ import http.client
 import http.server
 import json
 import os
+import re
 import socketserver
 import sys
 import threading
@@ -63,6 +64,55 @@ def api_json(method: str, path: str, body=None, timeout: int = 120):
         return json.loads(raw), None
     except Exception:  # noqa: BLE001
         return None, "响应格式异常"
+
+
+def pretty_text(raw: str) -> str:
+    """把存成对话记录形态的内容还原成可读文本。
+
+    摄入时有可能整段对话被当成一条内容存下来，直接显示会是一串带
+    引号和转义符的 JSON。这里只取其中的正文，其余形态原样返回。
+    """
+    s = (raw or "").strip()
+    if '"role"' not in s or '"content"' not in s:
+        return s
+
+    # 正常情况：整段就是一个 JSON 数组/对象
+    body = s
+    if not (body.startswith("[") or body.startswith("{")):
+        starts = [i for i in (body.find("["), body.find("{")) if i >= 0]
+        if not starts:
+            return s
+        body = body[min(starts):]
+    try:
+        parsed = json.loads(body)
+    except Exception:  # noqa: BLE001
+        parsed = None
+
+    parts = []
+
+    def collect(node):
+        if isinstance(node, dict):
+            c = node.get("content")
+            if isinstance(c, str) and c.strip():
+                parts.append(c.strip())
+        elif isinstance(node, list):
+            for x in node:
+                collect(x)
+
+    if parsed is not None:
+        collect(parsed)
+        if parts:
+            return "\n\n".join(parts)
+
+    # 兜底：从残缺的内容里挨个抠出 content 字段
+    for m in re.finditer(r'"content"\s*:\s*"((?:[^"\\]|\\.)*)"', s):
+        try:
+            text = json.loads('"' + m.group(1) + '"')
+        except Exception:  # noqa: BLE001
+            continue
+        if text.strip():
+            parts.append(text.strip())
+    return "\n\n".join(parts) if parts else s
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -167,7 +217,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             items.append(
                 {
                     "id": m.get("id"),
-                    "text": m.get("text") or "",
+                    "text": pretty_text(m.get("text") or ""),
                     "fact_type": m.get("fact_type"),
                     "date": m.get("date") or m.get("mentioned_at"),
                     "entities": m.get("entities") or [],
