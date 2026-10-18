@@ -1,0 +1,14 @@
+#!/bin/bash
+# 卸载：默认保留记忆数据（wizard 里可以选删除）
+set -uo pipefail
+
+if [ "${wizard_data_action:-keep}" = "delete" ]; then
+    echo "按选择删除记忆数据：${TRIM_PKGVAR:-}"
+    if [ -n "${TRIM_PKGVAR:-}" ] && [ -d "${TRIM_PKGVAR}" ]; then
+        rm -rf "${TRIM_PKGVAR:?}"
+    fi
+    echo "数据已删除"
+else
+    echo "Hindsight 已卸载；记忆数据保留在 ${TRIM_PKGVAR:-/vol1/@appdata/Hindsight}"
+fi
+exit 0

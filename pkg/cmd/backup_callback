@@ -1,0 +1,46 @@
+#!/bin/bash
+### 飞牛「应用备份」：停服务保证数据库一致 → 打包记忆库 → 拉起服务
+set -euo pipefail
+
+: "${TRIM_APPDEST:?TRIM_APPDEST is required}"
+: "${TRIM_PKGVAR:?TRIM_PKGVAR is required}"
+
+backup_data_dir="${TRIM_BACKUP_DATA_DIR:-}"
+if [ -z "$backup_data_dir" ]; then
+    : "${TRIM_BACKUP_DIR:?TRIM_BACKUP_DIR is required}"
+    backup_data_dir="${TRIM_BACKUP_DIR}/data"
+fi
+mkdir -p "$backup_data_dir"
+chmod a+rx "$backup_data_dir" 2>/dev/null || true
+
+WAS_RUNNING=0
+if "${TRIM_APPDEST}/cmd/main" status >/dev/null 2>&1; then
+    WAS_RUNNING=1
+    echo "[backup] 停服务以保证 PostgreSQL 一致…"
+    "${TRIM_APPDEST}/cmd/main" stop || true
+fi
+
+copy() {
+    local src="$1" name="$2"
+    if [ ! -e "$src" ]; then
+        echo "[backup] skip ${name}（不存在）"
+        return 0
+    fi
+    rm -rf "${backup_data_dir:?}/${name}"
+    mkdir -p "$(dirname "${backup_data_dir}/${name}")"
+    cp -a "$src" "${backup_data_dir}/${name}"
+    chmod -R a+rX "${backup_data_dir}/${name}" 2>/dev/null || true
+    echo "[backup] ${name} -> ${backup_data_dir}/${name}"
+}
+
+# 记忆库本体：嵌入式 pg 的数据目录；配置一并带走
+copy "${TRIM_PKGVAR}/.pg0/instances/hindsight" "pgdata"
+copy "${TRIM_PKGVAR}/hindsight.env"            "hindsight.env"
+
+if [ "$WAS_RUNNING" = "1" ]; then
+    echo "[backup] 恢复服务…"
+    "${TRIM_APPDEST}/cmd/main" start >/dev/null 2>&1 || echo "[backup] 警告：服务未能自动拉起" >&2
+fi
+
+echo "[backup] 完成 -> ${backup_data_dir}"
+exit 0

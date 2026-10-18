@@ -1,0 +1,25 @@
+{
+  "data-share": {
+    "shares": []
+  },
+  "backup": {
+    "enabled": true,
+    "guide": "备份包含：记忆库（PostgreSQL 数据目录）与运行参数。启动前会先停服务，保证数据库一致；恢复后自动拉起。",
+    "check_storage": true,
+    "exclude": {
+      "@appcenter": [],
+      "@appdata": [
+        "tmp/",
+        "*.log",
+        "*.pid"
+      ],
+      "@apptemp": [],
+      "@apphome": [],
+      "@appconf": [],
+      "@appmeta": [
+        "cache/"
+      ],
+      "@appshare": []
+    }
+  }
+}

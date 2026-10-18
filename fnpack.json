@@ -1,0 +1,34 @@
+{
+  "schema_version": "2",
+  "source_info": {
+    "name": "Hindsight 应用源",
+    "author": "aaiuh",
+    "homepage": "https://github.com/aaiuh/hindsight-fnos",
+    "description": "飞牛 fnOS 原生应用源。提供 Hindsight 记忆系统的原生版（无需 Docker），跟随官方上游更新。"
+  },
+  "apps": {
+    "hindsight": {
+      "display_name": "Hindsight 记忆库",
+      "desc": "Agent 长期记忆系统，原生运行于飞牛 fnOS，不依赖 Docker。内置 PostgreSQL 与向量检索，支持 onnx 语义嵌入与 flashrank 重排，提供 REST/MCP 接口与 Web 控制台。支持飞牛应用备份与恢复。",
+      "platform": [
+        "x86"
+      ],
+      "categories": [
+        "AI赋能"
+      ],
+      "icon_url": "./Hindsight/ICON.PNG",
+      "preview_urls": [],
+      "readme_url": "./Hindsight/README.md",
+      "bug_report_url": "https://github.com/aaiuh/hindsight-fnos/issues",
+      "maintainer": "aaiuh",
+      "maintainer_url": "https://github.com/aaiuh",
+      "distributor": "aaiuh",
+      "distributor_url": "https://github.com/aaiuh",
+      "run_as": "package",
+      "install_type": "root",
+      "is_docker": false,
+      "service_port": "8888",
+      "releases": {}
+    }
+  }
+}

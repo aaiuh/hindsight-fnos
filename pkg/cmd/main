@@ -1,0 +1,179 @@
+#!/bin/bash
+### Hindsight 飞牛原生版 —— 服务生命周期
+### appcenter 以 config/privilege 声明的账号（Hindsight）调用本脚本
+
+: "${TRIM_APPDEST:?TRIM_APPDEST is required}"
+: "${TRIM_PKGVAR:?TRIM_PKGVAR is required}"
+
+APP_HOME="${TRIM_PKGVAR}"
+RUNTIME="${TRIM_APPDEST}/runtime"
+VENV_DIR="${RUNTIME}/venv"
+VENV_PY="${VENV_DIR}/bin/hindsight-api"
+ENV_FILE="${APP_HOME}/hindsight.env"
+PID_FILE="${APP_HOME}/hindsight.pid"
+LOG_FILE="${APP_HOME}/hindsight.log"
+
+is_running() {
+    [ -f "$PID_FILE" ] || return 1
+    local pid
+    pid=$(cat "$PID_FILE" 2>/dev/null)
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+ensure_env_file() {
+    [ -f "$ENV_FILE" ] && return 0
+    cat > "$ENV_FILE" <<'ENVEOF'
+# Hindsight 运行参数（改完重启应用生效）
+HINDSIGHT_API_HOST=0.0.0.0
+HINDSIGHT_API_PORT=8888
+HINDSIGHT_API_LOG_LEVEL=info
+HINDSIGHT_API_EMBEDDINGS_PROVIDER=onnx
+HINDSIGHT_API_RERANKER_PROVIDER=flashrank
+# 事实抽取需要一个大模型。默认 none = 装完就能启动，但暂不抽取记忆。
+# 换成 openai / ollama / litellm 等并填好 BASE_URL、MODEL、API_KEY 后重启即可使用。
+HINDSIGHT_API_LLM_PROVIDER=none
+HINDSIGHT_API_LLM_BASE_URL=
+HINDSIGHT_API_LLM_MODEL=
+HINDSIGHT_API_LLM_API_KEY=
+ENVEOF
+    chmod 600 "$ENV_FILE"
+}
+
+start_service() {
+    if is_running; then
+        echo "Hindsight 已在运行 (pid=$(cat "$PID_FILE"))"
+        return 0
+    fi
+    if [ ! -x "$VENV_PY" ]; then
+        echo "运行时缺失: $VENV_PY —— 请重新安装本应用" >&2
+        return 1
+    fi
+
+    mkdir -p "$APP_HOME/tmp" "$APP_HOME/.pg0"
+    ensure_env_file
+
+    # ── venv 修复：构建机上的绝对路径在飞牛上不存在，全部改指包内 python ──
+    fix_venv() {
+        local py base sb lim
+        base="${RUNTIME}/python/bin"
+        py="$base/python3"
+        [ -x "$py" ] || { echo "包内 python 缺失: $py" >&2; return 1; }
+        mkdir -p "${VENV_DIR}/bin"
+        ln -sfn "$py" "${VENV_DIR}/bin/python"
+        ln -sfn python "${VENV_DIR}/bin/python3"
+        local ver
+        ver=$("$py" -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo "")
+        [ -n "$ver" ] && ln -sfn python "${VENV_DIR}/bin/python${ver}"
+        if [ -f "${VENV_DIR}/pyvenv.cfg" ]; then
+            sed -i "s|^home = .*|home = ${base}|" "${VENV_DIR}/pyvenv.cfg"
+        fi
+        # 控制台脚本的 shebang 还指着构建机的 venv 路径
+        sb="#!${py}"
+        lim=${#sb}
+        [ "$lim" -le 120 ] || { echo "包路径过长，shebang 会超限: $lim" >&2; return 1; }
+        local f
+        for f in "${VENV_DIR}"/bin/*; do
+            [ -f "$f" ] || continue
+            [ -L "$f" ] && continue
+            head -c 2 "$f" 2>/dev/null | grep -q '#!' || continue
+            sed -i "1s|^#!.*python[0-9.]*$|${sb}|" "$f"
+        done
+        return 0
+    }
+    fix_venv || return 1
+
+    # 重排模型：flashrank 只认 <cache_dir>/ms-marco-MiniLM-L-12-v2
+    export TMPDIR="$APP_HOME/tmp"
+    if [ -d "${RUNTIME}/flashrank/ms-marco-MiniLM-L-12-v2" ] && \
+       [ ! -d "${TMPDIR}/ms-marco-MiniLM-L-12-v2" ]; then
+        cp -a "${RUNTIME}/flashrank/ms-marco-MiniLM-L-12-v2" "${TMPDIR}/" 2>/dev/null || true
+    fi
+
+    # 嵌入式 PostgreSQL：二进制随包，数据在本应用的数据目录
+    if [ -d "${RUNTIME}/pg0/installation" ]; then
+        rm -rf "${APP_HOME}/.pg0/installation"
+        ln -sfn "${RUNTIME}/pg0/installation" "${APP_HOME}/.pg0/installation"
+    fi
+    # PostgreSQL 只认 0700/0750；备份/恢复后可能被放宽
+    if [ -d "${APP_HOME}/.pg0/instances/hindsight/data" ]; then
+        chmod go-rwx "${APP_HOME}/.pg0/instances/hindsight/data" 2>/dev/null || true
+    fi
+
+    # 模型随包，全离线加载
+    export HOME="$APP_HOME"
+    export HF_HOME="${RUNTIME}/hf"
+    export HF_HUB_OFFLINE=1
+    export HF_HUB_DISABLE_XET=1
+    export TRANSFORMERS_VERBOSITY=error
+    export HINDSIGHT_API_HOST="${HINDSIGHT_API_HOST:-0.0.0.0}"
+    export HINDSIGHT_API_PORT="${HINDSIGHT_API_PORT:-8888}"
+    export HINDSIGHT_CP_DATAPLANE_API_URL="http://127.0.0.1:${HINDSIGHT_API_PORT}"
+
+    # 用户可在 $ENV_FILE 覆盖任意变量（LLM provider/base/model/key 等）
+    set -a
+    # shellcheck disable=SC1090
+    . "$ENV_FILE"
+    set +a
+
+    echo "启动 Hindsight：$VENV_PY (port=${HINDSIGHT_API_PORT})"
+    # 切到应用目录：hindsight-api 会往上层目录找 .env，若在别的目录下启动
+    # 会误读无关的 .env（甚至因权限报错），所以固定 cwd
+    cd "$APP_HOME" || return 1
+    nohup "$VENV_PY" --host "$HINDSIGHT_API_HOST" --port "$HINDSIGHT_API_PORT" \
+        >> "$LOG_FILE" 2>&1 &
+    echo $! > "$PID_FILE"
+
+    # 等健康检查通过（最多 180s，首次启动要建库并加载模型）
+    for _ in $(seq 1 90); do
+        if curl -fsS "http://127.0.0.1:${HINDSIGHT_API_PORT}/health" >/dev/null 2>&1; then
+            echo "Hindsight 启动完成"
+            return 0
+        fi
+        if ! is_running; then
+            echo "Hindsight 启动失败，日志尾部：" >&2
+            tail -20 "$LOG_FILE" >&2
+            return 1
+        fi
+        sleep 2
+    done
+    echo "Hindsight 启动超时（仍在后台运行，日志：$LOG_FILE）" >&2
+    return 1
+}
+
+stop_service() {
+    if ! is_running; then
+        echo "Hindsight 未在运行"
+        rm -f "$PID_FILE"
+        return 0
+    fi
+    local pid
+    pid=$(cat "$PID_FILE")
+    echo "停止 Hindsight (pid=$pid)"
+    kill "$pid" 2>/dev/null
+    for _ in $(seq 1 40); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null
+    pkill -P "$pid" 2>/dev/null
+    rm -f "$PID_FILE"
+
+    # 嵌入式 postgres 由 API 托管，异常退出时可能残留
+    # 注意：只按本应用的数据目录精确匹配，避免误伤别的实例
+    local pgpid
+    pgpid=$(pgrep -f "postgres -D ${APP_HOME}/.pg0/instances/hindsight/data" 2>/dev/null || true)
+    if [ -n "$pgpid" ]; then
+        kill $pgpid 2>/dev/null || true
+        sleep 2
+        kill -9 $pgpid 2>/dev/null || true
+    fi
+    return 0
+}
+
+case "$1" in
+    start)   start_service ;;
+    stop)    stop_service ;;
+    status)  if is_running; then echo "Hindsight is running"; exit 0; else echo "Hindsight is not running"; exit 3; fi ;;
+    *)       exit 1 ;;
+esac
