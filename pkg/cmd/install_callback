@@ -42,6 +42,7 @@ if [ -n "${ui_port:-}" ]; then
                 'HINDSIGHT_API_HOST=0.0.0.0' \
                 'HINDSIGHT_API_PORT=8888' \
                 'HINDSIGHT_API_LOG_LEVEL=info' \
+                'HINDSIGHT_UI_PORT=9999' \
                 'HINDSIGHT_API_EMBEDDINGS_PROVIDER=onnx' \
                 'HINDSIGHT_API_RERANKER_PROVIDER=flashrank' \
                 'HINDSIGHT_API_LLM_PROVIDER=none' \
@@ -54,6 +55,16 @@ if [ -n "${ui_port:-}" ]; then
     sed -i "s|^HINDSIGHT_API_PORT=.*|HINDSIGHT_API_PORT=${ui_port}|" "$ENV_FILE"
     chmod 600 "$ENV_FILE" 2>/dev/null || true
     echo "[install] API 端口设为 ${ui_port}"
+fi
+
+# 管理界面端口（内网直接访问用），没填就沿用 9999
+if [ -n "${ui_web_port:-}" ]; then
+    if ! grep -q '^HINDSIGHT_UI_PORT=' "$ENV_FILE" 2>/dev/null; then
+        printf 'HINDSIGHT_UI_PORT=%s\n' "$ui_web_port" >> "$ENV_FILE"
+    else
+        sed -i "s|^HINDSIGHT_UI_PORT=.*|HINDSIGHT_UI_PORT=${ui_web_port}|" "$ENV_FILE"
+    fi
+    echo "[install] 管理界面端口设为 ${ui_web_port}"
 fi
 
 download() {

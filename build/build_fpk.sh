@@ -50,6 +50,9 @@ Hindsight 飞牛原生版
 程序运行时约 1.5 GB（自带 Python、语义模型、嵌入式 PostgreSQL），
 安装时由 install_callback 从下载源拉取到本目录的 runtime/。
 
+管理界面   http://<NAS地址>:9999   也可从应用中心图标进入
+接口文档   http://<NAS地址>:8888/docs
+
 数据目录 /vol1/@appdata/Hindsight
   .pg0/instances/hindsight/   记忆库本体（PostgreSQL 数据）
   .pg0/installation           指向包内 pg 二进制（启动时自动重建软链）

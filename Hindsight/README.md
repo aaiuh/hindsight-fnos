@@ -32,8 +32,8 @@ Python 3.12（python-build-standalone，随包自带）
     └── 重排 flashrank           ms-marco-MiniLM-L-12-v2（ONNX）
 ```
 
+- 管理界面：`9999`（浏览器打开 `http://<NAS地址>:9999`，也可从应用中心图标进入）
 - 后端 API：`8888`（REST + MCP）
-- 控制台：`9999`（由 API 一并提供）
 - 数据：`/vol1/@appdata/Hindsight`
 
 ## 构建方式
@@ -83,7 +83,8 @@ https://github.com/aaiuh/hindsight-fnos
 
 ## 装完要做什么
 
-装完服务会自己起来，`http://<NAS地址>:8888/docs` 能打开接口文档。
+装完服务会自己起来。浏览器打开 `http://<NAS地址>:9999` 就是管理界面（应用中心里点图标也一样），
+在界面里能按记忆库浏览、搜索、看详情；接口文档在界面右上角。
 但**要用起来还差一步：给 Hindsight 一个能用的大模型**，否则只存不抽。
 
 思路是改 `hindsight.env` 里的四行，然后重启应用：
@@ -96,7 +97,7 @@ HINDSIGHT_API_LLM_API_KEY=               # 本地服务一般留空
 ```
 
 - 文件位置：`/vol1/@appdata/Hindsight/hindsight.env`
-- 改完在应用中心点「停止」再「启动」（或 `systemctl restart hindsight-native`）
+- 改完在应用中心点「停止」再「启动」
 - 任何 OpenAI 兼容服务都行：Ollama、llama.cpp、vLLM、LM Studio、各家云 API
 - 语义嵌入与重排模型随包内置，**不需要额外下载，也不需要 GPU**
 
@@ -108,7 +109,7 @@ HINDSIGHT_API_LLM_API_KEY=               # 本地服务一般留空
 | fnOS | ≥ 1.1.0 |
 | 磁盘 | 程序 + 运行时约 1.8 GB（装到 `/vol1/@appcenter`），数据另算 |
 | 内存 | 启动后常驻约 1.2–1.5 GB |
-| 端口 | 8888（可在安装向导里改） |
+| 端口 | 8888（接口）、9999（管理界面），安装向导里可改 |
 | 网络 | 仅安装时需要访问 GitHub；日常运行完全离线 |
 
 ## 备份

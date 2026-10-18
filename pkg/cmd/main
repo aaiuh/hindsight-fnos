@@ -49,6 +49,8 @@ start_ui() {
     [ -f "$UI_SRC" ] || return 0
     stop_ui
     HINDSIGHT_API_PORT="${HINDSIGHT_API_PORT}" \
+    HINDSIGHT_UI_PORT="${HINDSIGHT_UI_PORT:-9999}" \
+    HINDSIGHT_APP_NAME="Hindsight" \
         nohup "$UI_PY" "$UI_SRC" "$UI_SOCK" >> "$UI_LOG" 2>&1 &
     echo $! > "$UI_PID_FILE"
     local i
@@ -56,7 +58,7 @@ start_ui() {
         [ -S "$UI_SOCK" ] && return 0
         sleep 0.5
     done
-    echo "入口页服务未就绪（不影响 API）：$UI_LOG" >&2
+    echo "界面服务未就绪（不影响 API）：$UI_LOG" >&2
     return 0
 }
 
