@@ -7,13 +7,12 @@
       "control": {
         "accessPerm": "editable"
       },
-      "protocol": "",
-      "gatewayPrefix": "/app/Hindsight",
-      "gatewaySocket": "app.sock",
-      "title": "Hindsight 记忆库",
-      "icon": "images/icon_{0}.png",
       "type": "iframe",
-      "url": "/app/Hindsight/"
+      "port": "9999",
+      "protocol": "http",
+      "url": "/",
+      "title": "Hindsight 记忆库",
+      "icon": "images/icon_{0}.png"
     }
   }
 }

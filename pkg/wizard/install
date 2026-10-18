@@ -13,22 +13,8 @@
           }
         ],
         "options": [],
-        "helpText": "Hindsight 的 REST 与 MCP 接口端口，默认 8888。",
+        "helpText": "Hindsight 的 REST 与 MCP 接口端口，默认 8888。管理界面固定使用 9999，内网可用浏览器直接打开 http://<NAS地址>:9999。",
         "initValue": "8888"
-      },
-      {
-        "type": "text",
-        "field": "ui_web_port",
-        "label": "界面端口",
-        "rules": [
-          {
-            "required": true,
-            "message": "请输入端口"
-          }
-        ],
-        "options": [],
-        "helpText": "管理界面的端口，内网用浏览器打开 http://<NAS地址>:9999 即可进入，默认 9999。",
-        "initValue": "9999"
       }
     ]
   },
