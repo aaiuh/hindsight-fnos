@@ -12,6 +12,12 @@ VENV_PY="${VENV_DIR}/bin/hindsight-api"
 ENV_FILE="${APP_HOME}/hindsight.env"
 PID_FILE="${APP_HOME}/hindsight.pid"
 LOG_FILE="${APP_HOME}/hindsight.log"
+# 应用中心内嵌入口：静态页走 Unix socket，由应用中心反向代理到 /app/Hindsight
+UI_SOCK="${TRIM_APPDEST}/app.sock"
+UI_PID_FILE="${APP_HOME}/ui.pid"
+UI_LOG="${APP_HOME}/ui.log"
+UI_PY="${RUNTIME}/python/bin/python3"
+UI_SRC="${TRIM_APPDEST}/ui/serve.py"
 
 is_running() {
     [ -f "$PID_FILE" ] || return 1
@@ -19,6 +25,39 @@ is_running() {
     pid=$(cat "$PID_FILE" 2>/dev/null)
     [ -n "$pid" ] || return 1
     kill -0 "$pid" 2>/dev/null
+}
+
+ui_running() {
+    [ -f "$UI_PID_FILE" ] || return 1
+    local pid
+    pid=$(cat "$UI_PID_FILE" 2>/dev/null)
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+stop_ui() {
+    if ui_running; then
+        kill "$(cat "$UI_PID_FILE")" 2>/dev/null || true
+        sleep 1
+        kill -9 "$(cat "$UI_PID_FILE")" 2>/dev/null || true
+    fi
+    rm -f "$UI_PID_FILE" "$UI_SOCK"
+}
+
+start_ui() {
+    [ -x "$UI_PY" ] || return 0
+    [ -f "$UI_SRC" ] || return 0
+    stop_ui
+    HINDSIGHT_API_PORT="${HINDSIGHT_API_PORT}" \
+        nohup "$UI_PY" "$UI_SRC" "$UI_SOCK" >> "$UI_LOG" 2>&1 &
+    echo $! > "$UI_PID_FILE"
+    local i
+    for i in $(seq 1 20); do
+        [ -S "$UI_SOCK" ] && return 0
+        sleep 0.5
+    done
+    echo "入口页服务未就绪（不影响 API）：$UI_LOG" >&2
+    return 0
 }
 
 ensure_env_file() {
@@ -128,6 +167,7 @@ start_service() {
     for _ in $(seq 1 90); do
         if curl -fsS "http://127.0.0.1:${HINDSIGHT_API_PORT}/health" >/dev/null 2>&1; then
             echo "Hindsight 启动完成"
+            start_ui
             return 0
         fi
         if ! is_running; then
@@ -145,6 +185,7 @@ stop_service() {
     if ! is_running; then
         echo "Hindsight 未在运行"
         rm -f "$PID_FILE"
+        stop_ui
         return 0
     fi
     local pid
@@ -158,6 +199,7 @@ stop_service() {
     kill -9 "$pid" 2>/dev/null
     pkill -P "$pid" 2>/dev/null
     rm -f "$PID_FILE"
+    stop_ui
 
     # 嵌入式 postgres 由 API 托管，异常退出时可能残留
     # 注意：只按本应用的数据目录精确匹配，避免误伤别的实例
