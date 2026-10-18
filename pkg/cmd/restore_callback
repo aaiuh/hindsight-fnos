@@ -2,11 +2,13 @@
 ### 飞牛「恢复」：把备份写回记忆库目录，然后拉起服务
 set -euo pipefail
 : "${TRIM_APPDEST:?}"; : "${TRIM_PKGVAR:?}"
+# cmd 目录在 /var/apps/<app>/cmd，不在 TRIM_APPDEST 下，按脚本位置定位
+CMD_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 restore_dir="${TRIM_BACKUP_DATA_DIR:-${TRIM_BACKUP_DIR:-}/data}"
 [ -d "$restore_dir" ] || { echo "[restore] 备份目录不存在: $restore_dir" >&2; exit 1; }
 
-"${TRIM_APPDEST}/cmd/main" stop || true
+"${CMD_DIR}/main" stop || true
 
 if [ -d "${restore_dir}/pgdata" ]; then
     DEST="${TRIM_PKGVAR}/.pg0/instances/hindsight"
@@ -29,6 +31,6 @@ if [ -f "${restore_dir}/hindsight.env" ]; then
     echo "[restore] 运行参数已还原"
 fi
 
-"${TRIM_APPDEST}/cmd/main" start || echo "[restore] 警告：服务未能自动拉起" >&2
+"${CMD_DIR}/main" start || echo "[restore] 警告：服务未能自动拉起" >&2
 echo "[restore] 完成"
 exit 0

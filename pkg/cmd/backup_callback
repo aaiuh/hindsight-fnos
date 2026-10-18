@@ -5,6 +5,10 @@ set -euo pipefail
 : "${TRIM_APPDEST:?TRIM_APPDEST is required}"
 : "${TRIM_PKGVAR:?TRIM_PKGVAR is required}"
 
+# 应用中心的 cmd 目录在 /var/apps/<app>/cmd，不在 TRIM_APPDEST 下；
+# 用脚本自身位置定位，别写死路径，否则停库/拉起会静默失败。
+CMD_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 backup_data_dir="${TRIM_BACKUP_DATA_DIR:-}"
 if [ -z "$backup_data_dir" ]; then
     : "${TRIM_BACKUP_DIR:?TRIM_BACKUP_DIR is required}"
@@ -14,10 +18,10 @@ mkdir -p "$backup_data_dir"
 chmod a+rx "$backup_data_dir" 2>/dev/null || true
 
 WAS_RUNNING=0
-if "${TRIM_APPDEST}/cmd/main" status >/dev/null 2>&1; then
+if "${CMD_DIR}/main" status >/dev/null 2>&1; then
     WAS_RUNNING=1
     echo "[backup] 停服务以保证 PostgreSQL 一致…"
-    "${TRIM_APPDEST}/cmd/main" stop || true
+    "${CMD_DIR}/main" stop || true
 fi
 
 copy() {
@@ -39,7 +43,7 @@ copy "${TRIM_PKGVAR}/hindsight.env"            "hindsight.env"
 
 if [ "$WAS_RUNNING" = "1" ]; then
     echo "[backup] 恢复服务…"
-    "${TRIM_APPDEST}/cmd/main" start >/dev/null 2>&1 || echo "[backup] 警告：服务未能自动拉起" >&2
+    "${CMD_DIR}/main" start >/dev/null 2>&1 || echo "[backup] 警告：服务未能自动拉起" >&2
 fi
 
 echo "[backup] 完成 -> ${backup_data_dir}"

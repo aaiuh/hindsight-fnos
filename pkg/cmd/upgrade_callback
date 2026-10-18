@@ -2,7 +2,7 @@
 set -euo pipefail
 # 升级后确保运行时完整；缺失则由 install_callback 重新拉取
 if [ ! -x "${TRIM_APPDEST}/runtime/venv/bin/hindsight-api" ]; then
-    "${TRIM_APPDEST}/cmd/install_callback" || exit 1
+    "$(cd "$(dirname "$0")" && pwd)/install_callback" || exit 1
 fi
 echo "Hindsight 升级完成"
 exit 0
