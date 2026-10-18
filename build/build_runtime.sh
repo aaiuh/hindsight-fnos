@@ -64,9 +64,14 @@ ls "$RUNTIME/flashrank/ms-marco-MiniLM-L-12-v2" | sed 's/^/    /'
 # 控制台是上游发布的 Next.js 产物，随包分发的只是这份产物；
 # 运行它需要系统已装 Node.js（见 NOTICE.md「运行依赖」）。
 say "取官方管理控制台（upstream 镜像内的 control-plane，原样复制）"
-CP_IMAGE="${CP_IMAGE:-ghcr.io/vectorize-io/hindsight:latest}"
+# 优先用与 API 同版本号的镜像标签，保证构建可复现；没有该标签才退回 latest
+CP_IMAGE="${CP_IMAGE:-ghcr.io/vectorize-io/hindsight:${PIP_VER}}"
 if command -v docker >/dev/null 2>&1; then
-    docker pull -q "$CP_IMAGE" >/dev/null
+    if ! docker pull -q "$CP_IMAGE" >/dev/null 2>&1; then
+        say "镜像标签 ${PIP_VER} 不可用，退回 latest"
+        CP_IMAGE="ghcr.io/vectorize-io/hindsight:latest"
+        docker pull -q "$CP_IMAGE" >/dev/null
+    fi
     CP_CID="$(docker create "$CP_IMAGE")"
     mkdir -p "$RUNTIME/control-plane"
     docker cp "$CP_CID:/app/control-plane/." "$RUNTIME/control-plane/"
