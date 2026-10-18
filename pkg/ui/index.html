@@ -41,7 +41,7 @@
     <h1>Hindsight 记忆库</h1>
     <p class="sub">Agent 长期记忆系统 · 飞牛原生版</p>
     <div class="row">
-      <a class="btn" id="docs" href="#" target="_blank" rel="noopener">打开接口文档</a>
+      <a class="btn" id="docs" href="backend/docs" target="_blank" rel="noopener">打开接口文档</a>
       <span class="state" id="state">检查服务…</span>
     </div>
     <ul>
@@ -57,17 +57,10 @@
       fetch('info.json', { cache: 'no-store' })
         .then(function (r) { return r.json(); })
         .then(function (info) {
-          var p = info.port || '8888';
-          var base = location.protocol + '//' + location.hostname + ':' + p;
-          btn.href = base + '/docs';
-          return fetch(base + '/health', { cache: 'no-store' })
-            .then(function (r) { st.innerHTML = r.ok ? '服务状态 <b>正常</b>' : '服务状态 <b>异常</b>'; })
-            .catch(function () { st.textContent = '服务未响应'; });
+          st.innerHTML = info.api_ok ? '服务状态 <b>正常</b>' : '服务状态 <b>异常</b>';
+          if (!info.api_ok) { btn.removeAttribute('href'); }
         })
-        .catch(function () {
-          st.textContent = '服务未响应';
-          btn.href = location.protocol + '//' + location.hostname + ':8888/docs';
-        });
+        .catch(function () { st.textContent = '状态未知'; });
     })();
   </script>
 </body>
