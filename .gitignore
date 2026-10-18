@@ -1,0 +1,7 @@
+dist/
+fake/
+*.tar.zst
+*.meta
+.venv/
+__pycache__/
+*.pyc

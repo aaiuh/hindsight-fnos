@@ -1,0 +1,34 @@
+#!/bin/bash
+### 飞牛「恢复」：把备份写回记忆库目录，然后拉起服务
+set -euo pipefail
+: "${TRIM_APPDEST:?}"; : "${TRIM_PKGVAR:?}"
+
+restore_dir="${TRIM_BACKUP_DATA_DIR:-${TRIM_BACKUP_DIR:-}/data}"
+[ -d "$restore_dir" ] || { echo "[restore] 备份目录不存在: $restore_dir" >&2; exit 1; }
+
+"${TRIM_APPDEST}/cmd/main" stop || true
+
+if [ -d "${restore_dir}/pgdata" ]; then
+    DEST="${TRIM_PKGVAR}/.pg0/instances/hindsight"
+    rm -rf "$DEST"
+    mkdir -p "${TRIM_PKGVAR}/.pg0/instances"
+    cp -a "${restore_dir}/pgdata" "$DEST"
+    echo "[restore] 记忆库已还原"
+
+    # 备份包里为了打包把权限放宽过（a+rX），PostgreSQL 只认 0700/0750，这里收回来
+    chmod -R go-rwx "$DEST" 2>/dev/null || true
+    chmod 700 "$DEST/data" 2>/dev/null || true
+    # 旧实例留下的 pid/元数据会让 pg0 误判，交给 pg0 重新生成
+    rm -f "$DEST/data/postmaster.pid" "$DEST/instance.json"
+    echo "[restore] 权限已收紧，实例元数据已重置"
+fi
+
+if [ -f "${restore_dir}/hindsight.env" ]; then
+    cp -a "${restore_dir}/hindsight.env" "${TRIM_PKGVAR}/hindsight.env"
+    chmod 600 "${TRIM_PKGVAR}/hindsight.env"
+    echo "[restore] 运行参数已还原"
+fi
+
+"${TRIM_APPDEST}/cmd/main" start || echo "[restore] 警告：服务未能自动拉起" >&2
+echo "[restore] 完成"
+exit 0

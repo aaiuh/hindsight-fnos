@@ -1,0 +1,215 @@
+name: 构建 Hindsight 原生版
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "hindsight-api 版本（留空 = 取 PyPI 最新）"
+        required: false
+      force:
+        description: "强制重建（该版本已发布也重来）"
+        type: boolean
+        default: false
+  schedule:
+    # 每周一 02:00（北京时间）跟一次上游
+    - cron: "0 18 * * 0"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hindsight-build
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: 取上游版本
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.pick.outputs.version }}
+      upstream: ${{ steps.pick.outputs.upstream }}
+      needed: ${{ steps.pick.outputs.needed }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 决定要构建的版本
+        id: pick
+        run: |
+          set -euo pipefail
+          VER=""
+          # 打标签触发时，标签就是包版本（v1.0.0-1 → 1.0.0-1），一律构建
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            VER="${GITHUB_REF_NAME#v}"
+            FORCE_TAG=true
+          elif [ -n "${{ inputs.version }}" ]; then
+            VER="${{ inputs.version }}"
+            FORCE_TAG=false
+          else
+            VER=$(python3 - <<'PY'
+          import json, urllib.request
+          with urllib.request.urlopen("https://pypi.org/pypi/hindsight-api/json", timeout=30) as r:
+              print(json.load(r)["info"]["version"])
+          PY
+            )
+            FORCE_TAG=false
+          fi
+
+          # 1.0.0-1 这种打包修订号，真正要装的 upstream 是 1.0.0
+          UP="${VER%%-*}"
+          echo "包版本：$VER   上游版本：$UP"
+
+          PUBLISHED=$(python3 -c "import json;print('\n'.join(json.load(open('fnpack.json'))['apps']['hindsight']['releases']))")
+          echo "已发布：${PUBLISHED:-（无）}"
+
+          if [ "${{ inputs.force }}" = "true" ]; then
+            echo "强制重建"
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          elif [ "$FORCE_TAG" = "true" ]; then
+            echo "标签触发，构建"
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          elif echo "$PUBLISHED" | grep -qx "$VER"; then
+            echo "该版本已发布，跳过构建"
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "upstream=$UP" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: 构建并发布
+    needs: resolve
+    if: needs.resolve.outputs.needed == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+    env:
+      VER: ${{ needs.resolve.outputs.version }}
+      UPSTREAM: ${{ needs.resolve.outputs.upstream }}
+      ZSTD_LEVEL: "15"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zstd unzip curl
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: 组装运行时（自带 python + 模型 + 嵌入式 pg）
+        run: PIP_VER="$UPSTREAM" bash build/build_runtime.sh "$VER" dist
+
+      - name: 打 fpk
+        run: bash build/build_fpk.sh "$VER" "dist/hindsight-runtime-${VER}.tar.zst" dist
+
+      - name: 自检：分发地址只允许 GitHub
+        run: |
+          set -euo pipefail
+          # 白名单：GitHub 及其常用镜像 + 包源。多一个主机就失败。
+          ALLOW='^(github\.com|gh-proxy\.com|ghfast\.top|raw\.githubusercontent\.com|cdn\.jsdelivr\.net|pypi\.org|files\.pythonhosted\.org|huggingface\.co|hf-mirror\.com|127\.0\.0\.1|localhost)$'
+          HOSTS=$(grep -rhoE 'https?://[A-Za-z0-9._-]+' pkg build 2>/dev/null \
+                  | sed -E 's|https?://||' | sort -u)
+          BAD=$(printf '%s\n' "$HOSTS" | grep -vE "$ALLOW" | grep -v '^$' || true)
+          # 私网地址字面量（写成字符类，避免本文件自己命中）
+          PRIV=$(grep -rhoE '(^|[^0-9])(10[.][0-9]{1,3}[.]|192[.]168[.]|172[.](1[6-9]|2[0-9]|3[01])[.])[0-9]{1,3}' pkg build 2>/dev/null | sort -u || true)
+          if [ -n "$BAD" ] || [ -n "$PRIV" ]; then
+            echo "::error::发现非 GitHub 分发地址或私网地址"
+            printf '  主机: %s\n  私网: %s\n' "$BAD" "$PRIV"
+            exit 1
+          fi
+          echo "自检通过：分发地址仅 GitHub / 包源"
+
+      - name: 冒烟测试（模拟飞牛安装后启动）
+        run: |
+          set -euo pipefail
+          FAKE="$PWD/fake"
+          mkdir -p "$FAKE/appdest" "$FAKE/pkgvar"
+          tar -xf "dist/Hindsight-${VER}-x86.fpk" -C "$FAKE/appdest"
+          mv dist/runtime "$FAKE/appdest/runtime"
+
+          # CI 里没有真实模型服务，用 mock provider 只验服务与数据库能起来
+          printf '%s\n' \
+            'HINDSIGHT_API_HOST=0.0.0.0' \
+            'HINDSIGHT_API_PORT=8888' \
+            'HINDSIGHT_API_EMBEDDINGS_PROVIDER=onnx' \
+            'HINDSIGHT_API_RERANKER_PROVIDER=flashrank' \
+            'HINDSIGHT_API_LLM_PROVIDER=mock' \
+            > "$FAKE/pkgvar/hindsight.env"
+
+          echo "── 用包里自带的启动脚本拉起服务 ──"
+          TRIM_APPDEST="$FAKE/appdest" TRIM_PKGVAR="$FAKE/pkgvar" \
+            bash "$FAKE/appdest/cmd/main" start
+
+          echo "── 健康检查 ──"
+          curl -fsS http://127.0.0.1:8888/health | head -c 400
+          echo
+
+          TRIM_APPDEST="$FAKE/appdest" TRIM_PKGVAR="$FAKE/pkgvar" \
+            bash "$FAKE/appdest/cmd/main" stop || true
+
+          echo "── 数据目录 ──"
+          find "$FAKE/pkgvar" -maxdepth 3 -type d | head -20
+
+      - name: 创建 Release 并上传
+        run: |
+          set -euo pipefail
+          TAG="v${VER}"
+          RT_SIZE=$(du -h "dist/hindsight-runtime-${VER}.tar.zst" | cut -f1)
+          {
+            echo "跟随上游 hindsight-api ${VER} 的原生封装。"
+            echo
+            echo "- 自带 Python 3.12 与全部依赖，安装即用，不需要 Docker"
+            echo "- 内置 PostgreSQL 18 + pgvector，onnx 语义嵌入（multilingual-e5-small）+ flashrank 重排"
+            echo "- 支持飞牛「应用备份 / 恢复」，备份前自动停服务保证数据一致"
+            echo
+            echo "安装包 Hindsight-${VER}-x86.fpk 很小，运行时约 ${RT_SIZE} 在安装时自动下载。"
+          } > "$RUNNER_TEMP/notes.md"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release 已存在，仅补传产物"
+          else
+            gh release create "$TAG" \
+              --title "Hindsight ${VER} 飞牛原生版" \
+              --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+
+          gh release upload "$TAG" \
+            "dist/Hindsight-${VER}-x86.fpk" \
+            "dist/hindsight-runtime-${VER}.tar.zst" \
+            --clobber
+
+      - name: 登记到 fnpack.json
+        run: |
+          set -euo pipefail
+          python3 build/publish.py "$VER" "dist/Hindsight-${VER}-x86.fpk"
+          head -40 fnpack.json
+
+      - name: 提交索引
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add fnpack.json
+          if git diff --cached --quiet; then
+            echo "fnpack.json 无变化"
+          else
+            git commit -m "chore: 发布 Hindsight ${VER}"
+            # 打标签触发时是游离 HEAD，显式推到 main
+            git push origin HEAD:refs/heads/main
+          fi
+
+      - name: 保留构建产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hindsight-${{ needs.resolve.outputs.version }}
+          path: |
+            dist/Hindsight-*.fpk
+            dist/runtime-*.meta
+          retention-days: 14

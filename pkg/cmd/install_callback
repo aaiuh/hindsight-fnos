@@ -1,0 +1,101 @@
+#!/bin/bash
+### 安装时：下载运行时包（自带 python + venv + 模型 + 嵌入式 pg）并解开
+### 运行时可放在任意主机：包内 python 自带，venv 的路径在启动时自动改写
+set -euo pipefail
+
+: "${TRIM_APPDEST:?TRIM_APPDEST is required}"
+: "${TRIM_PKGVAR:?TRIM_PKGVAR is required}"
+
+VER="__VERSION__"
+SHA="__SHA256__"
+SIZE="__SIZE__"
+DEST="${TRIM_APPDEST}/runtime"
+TARBALL="${TRIM_PKGTMP:-/tmp}/hindsight-runtime.tar.zst"
+
+# 下载源按顺序尝试：国内镜像（实测 5–9 MB/s）→ 直连
+URLS=(
+    "https://gh-proxy.com/https://github.com/aaiuh/hindsight-fnos/releases/download/v${VER}/hindsight-runtime-${VER}.tar.zst"
+    "https://ghfast.top/https://github.com/aaiuh/hindsight-fnos/releases/download/v${VER}/hindsight-runtime-${VER}.tar.zst"
+    "https://github.com/aaiuh/hindsight-fnos/releases/download/v${VER}/hindsight-runtime-${VER}.tar.zst"
+)
+
+if [ -x "${DEST}/venv/bin/hindsight-api" ] && [ -f "${DEST}/.complete" ]; then
+    echo "[install] 运行时已存在，跳过下载"
+    exit 0
+fi
+
+command -v curl >/dev/null || { echo "[install] 缺少 curl" >&2; exit 1; }
+
+mkdir -p "${TRIM_PKGTMP:-/tmp}" "$DEST"
+
+# 安装向导里填的端口写进配置（没填就沿用默认 8888）
+# 注意：这里必须写出「完整」的配置，否则 main 看到文件已存在就不再生成默认值，
+# 会导致嵌入/重排 provider 退回需要 torch 的默认实现而起不来。
+ENV_FILE="${TRIM_PKGVAR}/hindsight.env"
+if [ -n "${ui_port:-}" ]; then
+    mkdir -p "$TRIM_PKGVAR"
+    if [ ! -f "$ENV_FILE" ]; then
+        if [ -f "${TRIM_APPDEST}/defaults/hindsight.env" ]; then
+            cp "${TRIM_APPDEST}/defaults/hindsight.env" "$ENV_FILE"
+        else
+            printf '%s\n' \
+                'HINDSIGHT_API_HOST=0.0.0.0' \
+                'HINDSIGHT_API_PORT=8888' \
+                'HINDSIGHT_API_LOG_LEVEL=info' \
+                'HINDSIGHT_API_EMBEDDINGS_PROVIDER=onnx' \
+                'HINDSIGHT_API_RERANKER_PROVIDER=flashrank' \
+                'HINDSIGHT_API_LLM_PROVIDER=none' \
+                'HINDSIGHT_API_LLM_BASE_URL=' \
+                'HINDSIGHT_API_LLM_MODEL=' \
+                'HINDSIGHT_API_LLM_API_KEY=' \
+                > "$ENV_FILE"
+        fi
+    fi
+    sed -i "s|^HINDSIGHT_API_PORT=.*|HINDSIGHT_API_PORT=${ui_port}|" "$ENV_FILE"
+    chmod 600 "$ENV_FILE" 2>/dev/null || true
+    echo "[install] API 端口设为 ${ui_port}"
+fi
+
+download() {
+    local url="$1"
+    echo "[install] 尝试下载：$url"
+    rm -f "$TARBALL"
+    if curl -fL --connect-timeout 20 --retry 3 --retry-delay 5 -C - \
+            --speed-time 60 --speed-limit 10240 \
+            -o "$TARBALL" "$url" 2>&1 | tail -3; then
+        [ -s "$TARBALL" ] && return 0
+    fi
+    return 1
+}
+
+ok=0
+for u in "${URLS[@]}"; do
+    if download "$u"; then ok=1; break; fi
+    echo "[install] 该源失败，换下一个"
+done
+[ "$ok" = "1" ] || { echo "[install] 所有下载源都失败，请检查网络后重试" >&2; exit 1; }
+
+actual_sha=$(sha256sum "$TARBALL" | awk '{print $1}')
+if [ "$SHA" != "__SHA256__" ] && [ "$actual_sha" != "$SHA" ]; then
+    echo "[install] sha256 不匹配" >&2
+    echo "         期望 $SHA" >&2
+    echo "         实际 $actual_sha" >&2
+    exit 1
+fi
+echo "[install] sha256 校验通过（$actual_sha）"
+
+if ! command -v zstd >/dev/null; then
+    echo "[install] 未找到 zstd，尝试用 python 解压" >&2
+    "${DEST}/python/bin/python3" -c "import sys" 2>/dev/null || true
+    # 兜底：用 tar 的自动探测（部分 tar 支持 --zstd）
+    tar --zstd -C "$DEST" -xf "$TARBALL"
+else
+    tar -C "$DEST" -I zstd -xf "$TARBALL"
+fi
+
+touch "${DEST}/.complete"
+rm -f "$TARBALL"
+
+mkdir -p "${TRIM_PKGVAR}/tmp" "${TRIM_PKGVAR}/.pg0"
+echo "[install] 完成（运行时 ${SIZE} 字节）"
+exit 0

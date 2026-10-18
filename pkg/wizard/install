@@ -1,0 +1,35 @@
+[
+  {
+    "stepTitle": "服务端口",
+    "items": [
+      {
+        "type": "text",
+        "field": "ui_port",
+        "label": "API 端口",
+        "rules": [
+          {
+            "required": true,
+            "message": "请输入端口"
+          }
+        ],
+        "options": [],
+        "helpText": "Hindsight 的 REST 与 MCP 接口端口，默认 8888。",
+        "initValue": "8888"
+      }
+    ]
+  },
+  {
+    "stepTitle": "安装说明",
+    "items": [
+      {
+        "type": "tips",
+        "field": "install_tip",
+        "label": "安装需要下载运行时",
+        "rules": [],
+        "options": [],
+        "helpText": "安装时会自动下载约 620 MB 运行时（自带 Python、语义模型与嵌入式 PostgreSQL），按国内镜像优先的顺序尝试。数据将保存到 /vol1/@appdata/Hindsight，卸载时默认保留。装完服务即可启动；要真正抽取记忆，还需在 hindsight.env 里填一个 OpenAI 兼容的大模型地址（默认未配置）。",
+        "initValue": ""
+      }
+    ]
+  }
+]
