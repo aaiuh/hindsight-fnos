@@ -29,15 +29,33 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, format, *args):  # noqa: A002  少写日志
         sys.stderr.write("%s - %s\n" % (self.address_string(), format % args))
 
+    def _normalize(self):
+        """应用中心会把 /app/<应用名> 这个挂载前缀原样透传给后端。
+
+        不剥掉它，静态服务就会去找 <页面目录>/app/Hindsight/index.html，
+        于是点开图标看到的是 Python http.server 的 404 错误页。
+        """
+        path, sep, query = self.path.partition("?")
+        if path.startswith("/app/"):
+            rest = path[len("/app/"):]
+            cut = rest.find("/")
+            path = "/" if cut < 0 else rest[cut:]
+        if path in ("", "/"):
+            path = "/index.html"
+        self.path = path + (("?" + query) if sep else "")
+
     def do_GET(self):
+        self._normalize()
         path = self.path.split("?", 1)[0]
         if path in ("/health", "/healthz"):
             return self._json({"status": "ok"})
         if path in ("/info.json", "/info"):
             return self._json({"port": API_PORT, "name": "Hindsight"})
-        if path in ("", "/"):
-            self.path = "/index.html"
         return super().do_GET()
+
+    def do_HEAD(self):
+        self._normalize()
+        return super().do_HEAD()
 
     def _json(self, obj):
         body = json.dumps(obj).encode()
