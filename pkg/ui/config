@@ -2,7 +2,7 @@
   ".url": {
     "Hindsight.main": {
       "noDisplay": false,
-      "allUsers": false,
+      "allUsers": true,
       "fileTypes": [],
       "control": {
         "accessPerm": "editable"
@@ -12,9 +12,9 @@
       "gatewaySocket": "",
       "title": "Hindsight 记忆库",
       "icon": "images/icon_{0}.png",
-      "type": "url",
+      "type": "iframe",
       "port": "${ui_port}",
-      "url": ""
+      "url": "/docs"
     }
   }
 }
