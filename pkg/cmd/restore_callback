@@ -31,6 +31,13 @@ if [ -f "${restore_dir}/hindsight.env" ]; then
     echo "[restore] 运行参数已还原"
 fi
 
+# 本应用以 root 跑生命周期脚本（privilege: run-as=root，为了设 cgroup CPU 配额），
+# 上面 rm/mkdir/cp 出来的东西可能归 root，必须交还给包用户才能被服务进程写入。
+if id -u Hindsight >/dev/null 2>&1; then
+    chown -R Hindsight:Hindsight "${TRIM_PKGVAR}" 2>/dev/null || true
+    chmod -R go-rwx "${TRIM_PKGVAR}/.pg0/instances/hindsight/data" 2>/dev/null || true
+fi
+
 "${CMD_DIR}/main" start || echo "[restore] 警告：服务未能自动拉起" >&2
 echo "[restore] 完成"
 exit 0
