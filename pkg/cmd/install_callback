@@ -92,7 +92,10 @@ fi
 # 「检测 → 折算 → 收回越界」：留空自动取一半（至少 1，且至少留 1 核给系统），
 # 手填则校验范围，填到不小于本机核数时按「不限制」处理。
 [ -f "$ENV_FILE" ] || cp "${TRIM_APPDEST}/defaults/hindsight.env" "$ENV_FILE" 2>/dev/null || true
-NCPU=$(nproc 2>/dev/null || echo 0)
+# nproc --all：GNU nproc 会优先读 OMP_NUM_THREADS，若环境里带了这个变量就会拿到
+# 非物理核数，导致折算出来的值偏小甚至等于上限。--all 只报物理核数。
+NCPU=$(nproc --all 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo 0)
+NCPU=$((10#${NCPU:-0}))
 if [ "$NCPU" -ge 1 ] 2>/dev/null && [ -f "$ENV_FILE" ]; then
     want="${wizard_cpu_cores:-}"
     want="${want//[[:space:]]/}"
