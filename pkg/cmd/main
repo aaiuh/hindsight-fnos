@@ -32,7 +32,9 @@ SVC_USER="${TRIM_USERNAME:-Hindsight}"
 ### cores 语义：正整数且严格小于本机核数才设限；0 / 空 / 非法 / 大于等于核数 一律不限制。
 apply_cpu_cap() {
     local pid="$1"
-    local cores="${HINDSIGHT_CPU_CORES:-0}"
+    # 两个来源都要认：install_callback 写的是 HINDSIGHT_CPU_CORES，
+    # 应用设置页提交时传进来的是 wizard_cpu_cores（字段名即变量名）。
+    local cores="${HINDSIGHT_CPU_CORES:-${wizard_cpu_cores:-0}}"
     [ -n "$pid" ] || return 0
     [ "$(id -u)" = "0" ] || return 0
 
