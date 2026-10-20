@@ -1,8 +1,25 @@
 #!/bin/bash
+### 升级后：把 upgrade_init 暂存的运行时移回，然后交给 install_callback 做版本校验。
+### install_callback 已经带版本比对，版本不匹配会自动删掉重下，所以这里只管移回。
 set -euo pipefail
-# 升级后确保运行时完整；缺失则由 install_callback 重新拉取
-if [ ! -x "${TRIM_APPDEST}/runtime/venv/bin/hindsight-api" ]; then
-    "$(cd "$(dirname "$0")" && pwd)/install_callback" || exit 1
+
+DEST="${TRIM_APPDEST}/runtime"
+KEEP="${TRIM_PKGVAR:-}/.runtime-keep"
+CMD_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+if [ -d "$KEEP" ] && [ ! -d "$DEST" ]; then
+    if mv "$KEEP" "$DEST" 2>/dev/null; then
+        echo "[upgrade_callback] 已移回暂存的运行时（$(du -sh "$DEST" 2>/dev/null | cut -f1)）"
+    else
+        echo "[upgrade_callback] 移回失败，转为重新下载" >&2
+        rm -rf "$KEEP"
+    fi
+elif [ -d "$KEEP" ] && [ -d "$DEST" ]; then
+    # 两边都有：以新包里的为准，清掉暂存
+    rm -rf "$KEEP"
 fi
+
+# 运行时缺失或版本不符时由 install_callback 负责下载/替换
+"$CMD_DIR/install_callback" || exit 1
 echo "Hindsight 升级完成"
 exit 0
