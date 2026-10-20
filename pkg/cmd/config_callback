@@ -1,3 +1,48 @@
 #!/bin/bash
-# Hindsight: config_callback —— 无需额外处理
+### 应用设置页提交后执行：把「资源占用」的核数写进运行配置。
+### 字段名 wizard_cpu_cores 由 wizard/config 决定，提交后作为同名环境变量传入。
+### 写进 hindsight.env 的 HINDSIGHT_CPU_CORES，服务重启后由 cmd/main 读取生效。
+set -uo pipefail
+
+ENV_FILE="${TRIM_PKGVAR:-/vol1/@appdata/Hindsight}/hindsight.env"
+CORES="${wizard_cpu_cores:-}"
+
+if [ ! -f "$ENV_FILE" ]; then
+    echo "[config] 找不到 $ENV_FILE，跳过" >&2
+    exit 1
+fi
+
+if [ -z "$CORES" ]; then
+    echo "[config] 未提交核数，保持现有配置不变"
+    exit 0
+fi
+
+CORES="${CORES//[[:space:]]/}"
+case "$CORES" in
+    *[!0-9]*)
+        echo "[config] 核数必须是数字（收到：$CORES），已忽略" >&2
+        exit 1
+        ;;
+esac
+CORES=$((10#$CORES))
+
+# nproc --all：普通 nproc 会优先读 OMP_NUM_THREADS，这里拿到的是被污染的核数
+NCPU=$(nproc --all 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo 0)
+NCPU=$((10#${NCPU:-0}))
+if [ "$NCPU" -ge 1 ] && [ "$CORES" -ge "$NCPU" ]; then
+    echo "[config] 填的 ${CORES} 不小于本机 ${NCPU} 核，按不限制处理"
+    CORES=0
+fi
+
+if grep -q '^HINDSIGHT_CPU_CORES=' "$ENV_FILE" 2>/dev/null; then
+    sed -i "s|^HINDSIGHT_CPU_CORES=.*|HINDSIGHT_CPU_CORES=${CORES}|" "$ENV_FILE"
+else
+    printf 'HINDSIGHT_CPU_CORES=%s\n' "$CORES" >> "$ENV_FILE"
+fi
+
+if [ "$CORES" -eq 0 ]; then
+    echo "[config] 已设为不限制 CPU；重启应用后生效"
+else
+    echo "[config] 已限制为 ${CORES}/${NCPU} 核；重启应用后生效"
+fi
 exit 0
