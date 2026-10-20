@@ -7,8 +7,12 @@ set -euo pipefail
 : "${TRIM_PKGVAR:?TRIM_PKGVAR is required}"
 
 VER="__VERSION__"
-# 运行时与包版本解耦：runtime 只在依赖变化时才重发，包可以单独升版本。
+# 运行时与包版本解耦：
+#   RUNTIME_VER 跟随上游（如 1.0.0），只在依赖变化时才变，用于判断能否复用本地运行时；
+#   RUNTIME_TAG 是 runtime 资产所在的 Release tag（本次包版本），只用于拼下载地址。
+# 分开之后，1.0.0-19、1.0.0-20 这类只改脚本的版本升级不必重下 630 MB。
 RUNTIME_VER="__RUNTIME_VER__"
+RUNTIME_TAG="__RUNTIME_TAG__"
 SHA="__SHA256__"
 SIZE="__SIZE__"
 DEST="${TRIM_APPDEST}/runtime"
@@ -16,14 +20,26 @@ TARBALL="${TRIM_PKGTMP:-/tmp}/hindsight-runtime.tar.zst"
 
 # 下载源按顺序尝试：国内镜像（实测 5–9 MB/s）→ 直连
 URLS=(
-    "https://gh-proxy.com/https://github.com/aaiuh/hindsight-fnos/releases/download/v${RUNTIME_VER}/hindsight-runtime-${RUNTIME_VER}.tar.zst"
-    "https://ghfast.top/https://github.com/aaiuh/hindsight-fnos/releases/download/v${RUNTIME_VER}/hindsight-runtime-${RUNTIME_VER}.tar.zst"
-    "https://github.com/aaiuh/hindsight-fnos/releases/download/v${RUNTIME_VER}/hindsight-runtime-${RUNTIME_VER}.tar.zst"
+    "https://gh-proxy.com/https://github.com/aaiuh/hindsight-fnos/releases/download/v${RUNTIME_TAG}/hindsight-runtime-${RUNTIME_VER}.tar.zst"
+    "https://ghfast.top/https://github.com/aaiuh/hindsight-fnos/releases/download/v${RUNTIME_TAG}/hindsight-runtime-${RUNTIME_VER}.tar.zst"
+    "https://github.com/aaiuh/hindsight-fnos/releases/download/v${RUNTIME_TAG}/hindsight-runtime-${RUNTIME_VER}.tar.zst"
 )
 
 if [ -x "${DEST}/venv/bin/hindsight-api" ] && [ -f "${DEST}/.complete" ]; then
-    echo "[install] 运行时已存在，跳过下载"
-    exit 0
+    # 版本一致性校验：runtime 与包版本解耦后，升级时移回来的可能是旧运行时。
+    # 只有标记与本次要用的 RUNTIME_VER 相同才跳过下载，否则删掉重下。
+    HAVE_VER="$(cat "${DEST}/.runtime-version" 2>/dev/null || echo "")"
+    if [ "$HAVE_VER" = "$RUNTIME_VER" ]; then
+        echo "[install] 运行时已存在且版本匹配（${RUNTIME_VER}），跳过下载"
+        mkdir -p "${TRIM_PKGVAR}/tmp" "${TRIM_PKGVAR}/.pg0"
+        if id -u Hindsight >/dev/null 2>&1; then
+            chown -R Hindsight:Hindsight "${TRIM_PKGVAR}" 2>/dev/null || true
+        fi
+        exit 0
+    fi
+    echo "[install] 运行时版本不符（现 ${HAVE_VER:-未标记}，需 ${RUNTIME_VER}），重新下载"
+    rm -rf "$DEST"
+    mkdir -p "$DEST"
 fi
 
 command -v curl >/dev/null || { echo "[install] 缺少 curl" >&2; exit 1; }
@@ -115,19 +131,57 @@ download() {
     local url="$1"
     echo "[install] 尝试下载：$url"
     rm -f "$TARBALL"
+    # 换源阈值：60 秒内低于 100 KB/s 才放弃。不能设太高——本机实测最快也只有
+    # 0.5 MB/s，阈值抬到 512 KB/s 会把唯一能用的源也判死，变成全部失败。
     if curl -fL --connect-timeout 20 --retry 3 --retry-delay 5 -C - \
-            --speed-time 60 --speed-limit 10240 \
+            --speed-time 60 --speed-limit 102400 \
             -o "$TARBALL" "$url" 2>&1 | tail -3; then
         [ -s "$TARBALL" ] && return 0
     fi
     return 1
 }
 
+### 先给每个源测速，挑最快的下全量。
+### 原来的「按数组顺序试，卡死才换」等于没做择优：gh-proxy 只有 0.5 MB/s 时
+### 要 60 秒低于 10 KB/s 才换源，它会一直慢慢下完，ghfast 永远轮不到。
+### 测速取前 1 MiB，失败或太快完成都按实际字节算，速度记为 B/s。
+measure_speed() {
+    local url="$1"
+    local t0 t1 got ms
+    t0=$(date +%s%N)
+    got=$(curl -sL --max-time 10 -r 0-1048575 -o /dev/null -w '%{size_download}' "$url" 2>/dev/null || echo 0)
+    t1=$(date +%s%N)
+    ms=$(( (t1 - t0) / 1000000 ))
+    [ "$ms" -lt 1 ] && ms=1
+    case "$got" in ''|*[!0-9]*) got=0 ;; esac
+    echo $(( got * 1000 / ms ))
+}
+
+rank_sources() {
+    local u spd
+    local -a rows=()
+    for u in "${URLS[@]}"; do
+        spd=$(measure_speed "$u")
+        echo "[install] 测速 $(( spd / 1024 )) KB/s  $u" >&2
+        if [ "$spd" -gt 0 ]; then
+            rows+=("$spd|$u")
+        fi
+    done
+    if [ ${#rows[@]} -eq 0 ]; then
+        # 全测不通（或源不支持 Range）：退回原顺序硬试
+        printf '%s\n' "${URLS[@]}"
+        return 0
+    fi
+    printf '%s\n' "${rows[@]}" | sort -t'|' -k1,1 -rn | cut -d'|' -f2-
+}
+
 ok=0
-for u in "${URLS[@]}"; do
+SORTED=$(rank_sources)
+while IFS= read -r u; do
+    [ -n "$u" ] || continue
     if download "$u"; then ok=1; break; fi
     echo "[install] 该源失败，换下一个"
-done
+done <<< "$SORTED"
 [ "$ok" = "1" ] || { echo "[install] 所有下载源都失败，请检查网络后重试" >&2; exit 1; }
 
 actual_sha=$(sha256sum "$TARBALL" | awk '{print $1}')
@@ -149,6 +203,8 @@ else
 fi
 
 touch "${DEST}/.complete"
+# 记录运行时版本，供下次升级判断能否复用（没有这个标记就得重下 630 MB）
+printf '%s\n' "$RUNTIME_VER" > "${DEST}/.runtime-version"
 rm -f "$TARBALL"
 
 mkdir -p "${TRIM_PKGVAR}/tmp" "${TRIM_PKGVAR}/.pg0"
