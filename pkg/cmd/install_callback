@@ -7,12 +7,14 @@ set -euo pipefail
 : "${TRIM_PKGVAR:?TRIM_PKGVAR is required}"
 
 VER="__VERSION__"
-# 运行时与包版本解耦：
-#   RUNTIME_VER 跟随上游（如 1.0.0），只在依赖变化时才变，用于判断能否复用本地运行时；
-#   RUNTIME_TAG 是 runtime 资产所在的 Release tag（本次包版本），只用于拼下载地址。
-# 分开之后，1.0.0-19、1.0.0-20 这类只改脚本的版本升级不必重下 630 MB。
-RUNTIME_VER="__RUNTIME_VER__"
+# 运行时相关三个值，含义不同，别混用：
+#   RUNTIME_FILE 真实资产名（hindsight-runtime-1.0.0-18.tar.zst），拼下载地址用；
+#   RUNTIME_TAG  资产所在 Release tag（1.0.0-18），拼下载地址用；
+#   RUNTIME_VER  归一化到上游版本（1.0.0），判断本地运行时能否复用用这个。
+# 归一化之后，1.0.0-19/20 这类只改脚本的升级不会再重下 630 MB。
+RUNTIME_FILE="__RUNTIME_FILE__"
 RUNTIME_TAG="__RUNTIME_TAG__"
+RUNTIME_VER="__RUNTIME_VER__"
 SHA="__SHA256__"
 SIZE="__SIZE__"
 DEST="${TRIM_APPDEST}/runtime"
@@ -20,9 +22,9 @@ TARBALL="${TRIM_PKGTMP:-/tmp}/hindsight-runtime.tar.zst"
 
 # 下载源按顺序尝试：国内镜像（实测 5–9 MB/s）→ 直连
 URLS=(
-    "https://gh-proxy.com/https://github.com/aaiuh/hindsight-fnos/releases/download/v${RUNTIME_TAG}/hindsight-runtime-${RUNTIME_VER}.tar.zst"
-    "https://ghfast.top/https://github.com/aaiuh/hindsight-fnos/releases/download/v${RUNTIME_TAG}/hindsight-runtime-${RUNTIME_VER}.tar.zst"
-    "https://github.com/aaiuh/hindsight-fnos/releases/download/v${RUNTIME_TAG}/hindsight-runtime-${RUNTIME_VER}.tar.zst"
+    "https://gh-proxy.com/https://github.com/aaiuh/hindsight-fnos/releases/download/v${RUNTIME_TAG}/${RUNTIME_FILE}"
+    "https://ghfast.top/https://github.com/aaiuh/hindsight-fnos/releases/download/v${RUNTIME_TAG}/${RUNTIME_FILE}"
+    "https://github.com/aaiuh/hindsight-fnos/releases/download/v${RUNTIME_TAG}/${RUNTIME_FILE}"
 )
 
 if [ -x "${DEST}/venv/bin/hindsight-api" ] && [ -f "${DEST}/.complete" ]; then
