@@ -295,15 +295,23 @@ start_service() {
     run_uid=$(id -u "$SVC_USER" 2>/dev/null || true)
     run_gid=$(id -g "$SVC_USER" 2>/dev/null || true)
     if [ -z "$run_uid" ] || [ -z "$run_gid" ]; then
-        echo "找不到运行账号 $SVC_USER，拒绝以 root 启动服务" >&2
-        return 1
+        if [ "$(id -u)" = "0" ]; then
+            # 飞牛上以 root 跑却找不到包账号：这是真问题，不能用 root 对外提供接口
+            echo "找不到运行账号 $SVC_USER，拒绝以 root 启动服务" >&2
+            return 1
+        fi
+        # 非 root（CI 冒烟测试等）：本来就没有可降权的目标，直接用当前身份启动
+        echo "找不到运行账号 $SVC_USER，当前非 root，直接以当前身份启动" >&2
+        nohup "$VENV_PY" --host "$HINDSIGHT_API_HOST" --port "$HINDSIGHT_API_PORT" \
+            >> "$LOG_FILE" 2>&1 &
+        echo $! > "$PID_FILE"
+    else
+        # setpriv 用 exec 替换自身，所以 $! 就是 python 的真实 PID（runuser 会留在父进程）
+        nohup setpriv --reuid="$run_uid" --regid="$run_gid" --init-groups \
+            "$VENV_PY" --host "$HINDSIGHT_API_HOST" --port "$HINDSIGHT_API_PORT" \
+            >> "$LOG_FILE" 2>&1 &
+        echo $! > "$PID_FILE"
     fi
-
-    # setpriv 用 exec 替换自身，所以 $! 就是 python 的真实 PID（runuser 会留在父进程）
-    nohup setpriv --reuid="$run_uid" --regid="$run_gid" --init-groups \
-        "$VENV_PY" --host "$HINDSIGHT_API_HOST" --port "$HINDSIGHT_API_PORT" \
-        >> "$LOG_FILE" 2>&1 &
-    echo $! > "$PID_FILE"
 
     # 按配置给服务进程设 CPU 配额；失败只告警，不影响启动
     apply_cpu_cap "$(cat "$PID_FILE" 2>/dev/null || true)"
