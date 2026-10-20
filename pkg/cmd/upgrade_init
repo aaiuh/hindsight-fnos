@@ -1,3 +1,37 @@
 #!/bin/bash
-# Hindsight: upgrade_init —— 无需额外处理
+### 升级前：把现有运行时挪到数据目录保管，升级后移回，省掉重新下载 630 MB。
+### 应用中心升级会整体替换 TRIM_APPDEST，不挪走就会被删掉，install_callback 只能重下。
+### 数据目录（TRIM_PKGVAR）在升级时不动。
+set -uo pipefail
+
+SRC="${TRIM_APPDEST:-}/runtime"
+KEEP="${TRIM_PKGVAR:-}/.runtime-keep"
+
+if [ -z "${TRIM_APPDEST:-}" ] || [ -z "${TRIM_PKGVAR:-}" ]; then
+    echo "[upgrade_init] 缺少 TRIM_APPDEST/TRIM_PKGVAR，跳过运行时保管" >&2
+    exit 0
+fi
+
+if [ ! -d "$SRC" ]; then
+    echo "[upgrade_init] 没有现存运行时，无需保管"
+    exit 0
+fi
+
+# 上次中断留下的残包清掉，避免把半截运行时当成好的
+if [ -d "$KEEP" ]; then
+    rm -rf "$KEEP"
+fi
+
+# 只在运行时看起来完整时才保管；装了一半的就让它重新下
+if [ ! -x "${SRC}/venv/bin/hindsight-api" ] || [ ! -f "${SRC}/.complete" ]; then
+    echo "[upgrade_init] 运行时不完整，不保管（升级后会重新下载）"
+    exit 0
+fi
+
+mkdir -p "$(dirname "$KEEP")"
+if mv "$SRC" "$KEEP" 2>/dev/null; then
+    echo "[upgrade_init] 运行时已暂存到 $KEEP（$(du -sh "$KEEP" 2>/dev/null | cut -f1)），升级后移回"
+else
+    echo "[upgrade_init] 暂存运行时失败，升级后会重新下载" >&2
+fi
 exit 0
