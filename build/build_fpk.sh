@@ -30,6 +30,10 @@ trap 'rm -rf "$STAGE"' EXIT
 sed -i "s|__VERSION__|$VER|g"        "$STAGE/manifest"
 sed -i "s|__VERSION__|$VER|g"        "$STAGE/cmd/install_callback"
 sed -i "s|__RUNTIME_VER__|$RUNTIME_VER|g" "$STAGE/cmd/install_callback"
+# runtime 的下载 tag 用本次包版本（资产发在当前 Release 里），
+# 而 runtime 的版本号跟随上游（见上面 RUNTIME_VER），两者必须分开：
+# 否则每发一个小版本 runtime 版本号就变，用户端的复用标记永远对不上。
+sed -i "s|__RUNTIME_TAG__|$VER|g"    "$STAGE/cmd/install_callback"
 sed -i "s|__SHA256__|$SHA|g"         "$STAGE/cmd/install_callback"
 sed -i "s|__SIZE__|$SIZE|g"          "$STAGE/cmd/install_callback"
 chmod +x "$STAGE/cmd/"*
