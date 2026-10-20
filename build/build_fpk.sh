@@ -13,10 +13,13 @@ OUT="$(cd "$(dirname "$OUT")" && pwd)/$(basename "$OUT")"
 mkdir -p "$OUT"
 
 [ -f "$RUNTIME_TAR" ] || { echo "运行时包不存在: $RUNTIME_TAR" >&2; exit 1; }
-META="$(dirname "$RUNTIME_TAR")/runtime-${VER}.meta"
+# runtime 版本从文件名取（hindsight-runtime-<ver>.tar.zst），与包版本解耦：
+# 只改脚本、依赖没变时可以只升包版本而不重发 680 MB 运行时。
+RUNTIME_VER="$(basename "$RUNTIME_TAR" | sed 's/^hindsight-runtime-//; s/\.tar\.zst$//')"
+META="$(dirname "$RUNTIME_TAR")/runtime-${RUNTIME_VER}.meta"
 SHA=$(grep '^sha256=' "$META" | cut -d= -f2)
 SIZE=$(grep '^size=' "$META" | cut -d= -f2)
-echo "[fpk] 运行时 $(numfmt --to=iec "$SIZE") sha256=$SHA"
+echo "[fpk] 运行时 $(numfmt --to=iec "$SIZE") sha256=$SHA (runtime ${RUNTIME_VER})"
 
 # 用临时副本打，避免把替换过的占位符留在仓库里
 STAGE="$OUT/.stage-$$"
@@ -26,6 +29,7 @@ trap 'rm -rf "$STAGE"' EXIT
 
 sed -i "s|__VERSION__|$VER|g"        "$STAGE/manifest"
 sed -i "s|__VERSION__|$VER|g"        "$STAGE/cmd/install_callback"
+sed -i "s|__RUNTIME_VER__|$RUNTIME_VER|g" "$STAGE/cmd/install_callback"
 sed -i "s|__SHA256__|$SHA|g"         "$STAGE/cmd/install_callback"
 sed -i "s|__SIZE__|$SIZE|g"          "$STAGE/cmd/install_callback"
 chmod +x "$STAGE/cmd/"*
