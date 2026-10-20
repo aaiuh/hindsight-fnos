@@ -1,5 +1,24 @@
 [
   {
+    "stepTitle": "资源占用",
+    "items": [
+      {
+        "type": "text",
+        "field": "wizard_cpu_cores",
+        "label": "最多使用几个 CPU 核心",
+        "rules": [
+          {
+            "pattern": "^[0-9]+$",
+            "message": "请填写数字"
+          }
+        ],
+        "options": [],
+        "helpText": "限制本应用能用的 CPU 核心数，避免写入或检索时让整机卡顿。填 0 表示不限制。改完需要重启应用生效。",
+        "initValue": ""
+      }
+    ]
+  },
+  {
     "stepTitle": "服务端口",
     "items": [
       {
