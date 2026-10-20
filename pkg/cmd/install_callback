@@ -7,6 +7,8 @@ set -euo pipefail
 : "${TRIM_PKGVAR:?TRIM_PKGVAR is required}"
 
 VER="__VERSION__"
+# 运行时与包版本解耦：runtime 只在依赖变化时才重发，包可以单独升版本。
+RUNTIME_VER="__RUNTIME_VER__"
 SHA="__SHA256__"
 SIZE="__SIZE__"
 DEST="${TRIM_APPDEST}/runtime"
@@ -14,9 +16,9 @@ TARBALL="${TRIM_PKGTMP:-/tmp}/hindsight-runtime.tar.zst"
 
 # 下载源按顺序尝试：国内镜像（实测 5–9 MB/s）→ 直连
 URLS=(
-    "https://gh-proxy.com/https://github.com/aaiuh/hindsight-fnos/releases/download/v${VER}/hindsight-runtime-${VER}.tar.zst"
-    "https://ghfast.top/https://github.com/aaiuh/hindsight-fnos/releases/download/v${VER}/hindsight-runtime-${VER}.tar.zst"
-    "https://github.com/aaiuh/hindsight-fnos/releases/download/v${VER}/hindsight-runtime-${VER}.tar.zst"
+    "https://gh-proxy.com/https://github.com/aaiuh/hindsight-fnos/releases/download/v${RUNTIME_VER}/hindsight-runtime-${RUNTIME_VER}.tar.zst"
+    "https://ghfast.top/https://github.com/aaiuh/hindsight-fnos/releases/download/v${RUNTIME_VER}/hindsight-runtime-${RUNTIME_VER}.tar.zst"
+    "https://github.com/aaiuh/hindsight-fnos/releases/download/v${RUNTIME_VER}/hindsight-runtime-${RUNTIME_VER}.tar.zst"
 )
 
 if [ -x "${DEST}/venv/bin/hindsight-api" ] && [ -f "${DEST}/.complete" ]; then
@@ -67,6 +69,48 @@ if [ -n "${ui_web_port:-}" ]; then
     echo "[install] 管理界面端口设为 ${ui_web_port}"
 fi
 
+# ── CPU 核数 ────────────────────────────────────────────────
+# wizard 是静态 JSON，装机前没法列出这台机器的真实核数，所以这里做
+# 「检测 → 折算 → 收回越界」：留空自动取一半（至少 1，且至少留 1 核给系统），
+# 手填则校验范围，填到不小于本机核数时按「不限制」处理。
+[ -f "$ENV_FILE" ] || cp "${TRIM_APPDEST}/defaults/hindsight.env" "$ENV_FILE" 2>/dev/null || true
+NCPU=$(nproc 2>/dev/null || echo 0)
+if [ "$NCPU" -ge 1 ] 2>/dev/null && [ -f "$ENV_FILE" ]; then
+    want="${wizard_cpu_cores:-}"
+    want="${want//[[:space:]]/}"
+    case "$want" in
+        ''|*[!0-9]*)
+            if [ "$NCPU" -le 1 ]; then
+                cpu_cores=0
+            else
+                cpu_cores=$(( NCPU / 2 ))
+                [ "$cpu_cores" -ge 1 ] || cpu_cores=1
+                [ "$cpu_cores" -lt "$NCPU" ] || cpu_cores=$(( NCPU - 1 ))
+            fi
+            cpu_src="未填，自动折算"
+            ;;
+        *)
+            cpu_cores=$((10#$want))
+            if [ "$cpu_cores" -le 0 ] || [ "$cpu_cores" -ge "$NCPU" ]; then
+                cpu_src="填了 ${want}，不小于本机 ${NCPU} 核，按不限制"
+                cpu_cores=0
+            else
+                cpu_src="按填写值"
+            fi
+            ;;
+    esac
+    if grep -q '^HINDSIGHT_CPU_CORES=' "$ENV_FILE" 2>/dev/null; then
+        sed -i "s|^HINDSIGHT_CPU_CORES=.*|HINDSIGHT_CPU_CORES=${cpu_cores}|" "$ENV_FILE"
+    else
+        printf 'HINDSIGHT_CPU_CORES=%s\n' "$cpu_cores" >> "$ENV_FILE"
+    fi
+    if [ "$cpu_cores" -eq 0 ]; then
+        echo "[install] 本机 ${NCPU} 核；${cpu_src} → 不限制 CPU"
+    else
+        echo "[install] 本机 ${NCPU} 核；${cpu_src} → 限制为 ${cpu_cores} 核（余 $((NCPU - cpu_cores)) 核留给其它应用）"
+    fi
+fi
+
 download() {
     local url="$1"
     echo "[install] 尝试下载：$url"
@@ -108,5 +152,12 @@ touch "${DEST}/.complete"
 rm -f "$TARBALL"
 
 mkdir -p "${TRIM_PKGVAR}/tmp" "${TRIM_PKGVAR}/.pg0"
+
+# 本脚本以 root 运行（privilege: run-as=root，为了设 cgroup CPU 配额），
+# 由它创建的目录、配置必须交还给包用户，否则服务进程写入会失败。
+if id -u Hindsight >/dev/null 2>&1; then
+    chown -R Hindsight:Hindsight "${TRIM_PKGVAR}" 2>/dev/null || true
+fi
+[ -f "$ENV_FILE" ] && chmod 600 "$ENV_FILE" 2>/dev/null || true
 echo "[install] 完成（运行时 ${SIZE} 字节）"
 exit 0
