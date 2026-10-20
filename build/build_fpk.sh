@@ -13,13 +13,19 @@ OUT="$(cd "$(dirname "$OUT")" && pwd)/$(basename "$OUT")"
 mkdir -p "$OUT"
 
 [ -f "$RUNTIME_TAR" ] || { echo "运行时包不存在: $RUNTIME_TAR" >&2; exit 1; }
-# runtime 版本从文件名取（hindsight-runtime-<ver>.tar.zst），与包版本解耦：
-# 只改脚本、依赖没变时可以只升包版本而不重发 680 MB 运行时。
-RUNTIME_VER="$(basename "$RUNTIME_TAR" | sed 's/^hindsight-runtime-//; s/\.tar\.zst$//')"
-META="$(dirname "$RUNTIME_TAR")/runtime-${RUNTIME_VER}.meta"
+# runtime 有三个概念必须分开，否则用户每次升级都要重下 630 MB：
+#   RUNTIME_FILE 真实资产名（hindsight-runtime-1.0.0-18.tar.zst），只用于拼下载地址；
+#   RUNTIME_VER  归一化到上游版本（1.0.0），install_callback 用它判断本地运行时能否复用；
+#   RUNTIME_TAG  资产所在 Release（v1.0.0-18 = 本次包版本）。
+RUNTIME_FILE="$(basename "$RUNTIME_TAR")"
+RUNTIME_RAW="${RUNTIME_FILE#hindsight-runtime-}"; RUNTIME_RAW="${RUNTIME_RAW%.tar.zst}"
+META="$(dirname "$RUNTIME_TAR")/runtime-${RUNTIME_RAW}.meta"
 SHA=$(grep '^sha256=' "$META" | cut -d= -f2)
 SIZE=$(grep '^size=' "$META" | cut -d= -f2)
-echo "[fpk] 运行时 $(numfmt --to=iec "$SIZE") sha256=$SHA (runtime ${RUNTIME_VER})"
+RUNTIME_VER="${RUNTIME_RAW%%-*}"
+RUNTIME_TAG="$VER"
+echo "[fpk] 运行时 $(numfmt --to=iec "$SIZE") sha256=$SHA"
+echo "[fpk]       文件 $RUNTIME_FILE  复用标记 $RUNTIME_VER  下载 tag v$RUNTIME_TAG"
 
 # 用临时副本打，避免把替换过的占位符留在仓库里
 STAGE="$OUT/.stage-$$"
@@ -29,11 +35,9 @@ trap 'rm -rf "$STAGE"' EXIT
 
 sed -i "s|__VERSION__|$VER|g"        "$STAGE/manifest"
 sed -i "s|__VERSION__|$VER|g"        "$STAGE/cmd/install_callback"
+sed -i "s|__RUNTIME_FILE__|$RUNTIME_FILE|g" "$STAGE/cmd/install_callback"
 sed -i "s|__RUNTIME_VER__|$RUNTIME_VER|g" "$STAGE/cmd/install_callback"
-# runtime 的下载 tag 用本次包版本（资产发在当前 Release 里），
-# 而 runtime 的版本号跟随上游（见上面 RUNTIME_VER），两者必须分开：
-# 否则每发一个小版本 runtime 版本号就变，用户端的复用标记永远对不上。
-sed -i "s|__RUNTIME_TAG__|$VER|g"    "$STAGE/cmd/install_callback"
+sed -i "s|__RUNTIME_TAG__|$RUNTIME_TAG|g" "$STAGE/cmd/install_callback"
 sed -i "s|__SHA256__|$SHA|g"         "$STAGE/cmd/install_callback"
 sed -i "s|__SIZE__|$SIZE|g"          "$STAGE/cmd/install_callback"
 chmod +x "$STAGE/cmd/"*
