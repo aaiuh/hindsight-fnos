@@ -27,6 +27,31 @@ URLS=(
     "https://github.com/aaiuh/hindsight-fnos/releases/download/v${RUNTIME_TAG}/${RUNTIME_FILE}"
 )
 
+### 复用 upgrade_init 暂存的运行时。
+### 🔴 FnDepot 的「升级」实测走的是 upgrade_init → uninstall_callback → install_callback，
+### **upgrade_callback 根本不会被调用**（日志里只有一条 upgrade_init，之后直接是 install）。
+### 所以移回逻辑必须放在这里，否则每次升级都白暂存、照样重下 660 MB。
+KEEP="${TRIM_PKGVAR}/.runtime-keep"
+if [ ! -x "${DEST}/venv/bin/hindsight-api" ] && [ -d "$KEEP" ]; then
+    KEEP_VER="$(cat "$KEEP/.runtime-version" 2>/dev/null || echo "")"
+    if [ "$KEEP_VER" = "$RUNTIME_VER" ] && [ -x "$KEEP/venv/bin/hindsight-api" ]; then
+        echo "[install] 复用升级前暂存的运行时（版本 ${KEEP_VER}），跳过 660 MB 下载"
+        mkdir -p "$(dirname "$DEST")"
+        if mv "$KEEP" "$DEST" 2>/dev/null; then
+            if id -u Hindsight >/dev/null 2>&1; then
+                chown -R Hindsight:Hindsight "$DEST" 2>/dev/null || true
+            fi
+            mkdir -p "${TRIM_PKGVAR}/tmp" "${TRIM_PKGVAR}/.pg0"
+            echo "[install] 运行时已移回，完成"
+            exit 0
+        fi
+        echo "[install] 移回失败，转为下载" >&2
+    else
+        echo "[install] 暂存运行时版本不符（${KEEP_VER:-无标记} ≠ ${RUNTIME_VER}），丢弃并重新下载"
+        rm -rf "$KEEP"
+    fi
+fi
+
 if [ -x "${DEST}/venv/bin/hindsight-api" ] && [ -f "${DEST}/.complete" ]; then
     # 版本一致性校验：runtime 与包版本解耦后，升级时移回来的可能是旧运行时。
     # 只有标记与本次要用的 RUNTIME_VER 相同才跳过下载，否则删掉重下。
