@@ -42,8 +42,12 @@ apply_cpu_cap() {
     cores=$((10#$cores))
     [ "$cores" -gt 0 ] 2>/dev/null || return 0
 
+    # 必须用 nproc --all：GNU nproc 会优先读 OMP_NUM_THREADS，而下面已经 set -a
+    # 加载过 hindsight.env（里面有 OMP_NUM_THREADS=2），普通 nproc 会返回 2，
+    # 于是「配置 2 核 >= 本机 2 核」被误判成不限制。实测踩过。
     local ncpu
-    ncpu=$(nproc 2>/dev/null || echo 0)
+    ncpu=$(nproc --all 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo 0)
+    ncpu=$((10#${ncpu:-0}))
     [ "$ncpu" -ge 1 ] 2>/dev/null || return 0
     if [ "$cores" -ge "$ncpu" ]; then
         echo "配置的核数 $cores 不小于本机核数 $ncpu，按不限制运行"
