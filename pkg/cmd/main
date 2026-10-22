@@ -23,54 +23,6 @@ CP_DIR="${RUNTIME}/control-plane"
 CP_PID_FILE="${APP_HOME}/cp.pid"
 CP_LOG="${APP_HOME}/cp.log"
 NODE_BIN=""
-# CPU 配额：生命周期脚本以 root 跑（privilege: run-as=root），服务进程用 setpriv 降到包用户
-CAP_CGROUP="/sys/fs/cgroup/hindsight"
-SVC_USER="${TRIM_USERNAME:-Hindsight}"
-
-### 按用户选的核数给服务进程设 cgroup CPU 配额。
-### 需要 root（本脚本是 root 身份），失败不阻断启动：设不上就按不限制跑，服务照常用。
-### cores 语义：正整数且严格小于本机核数才设限；0 / 空 / 非法 / 大于等于核数 一律不限制。
-apply_cpu_cap() {
-    local pid="$1"
-    # 两个来源都要认：install_callback 写的是 HINDSIGHT_CPU_CORES，
-    # 应用设置页提交时传进来的是 wizard_cpu_cores（字段名即变量名）。
-    local cores="${HINDSIGHT_CPU_CORES:-${wizard_cpu_cores:-0}}"
-    [ -n "$pid" ] || return 0
-    [ "$(id -u)" = "0" ] || return 0
-
-    case "$cores" in
-        ''|*[!0-9]*) return 0 ;;
-    esac
-    cores=$((10#$cores))
-    [ "$cores" -gt 0 ] 2>/dev/null || return 0
-
-    # 必须用 nproc --all：GNU nproc 会优先读 OMP_NUM_THREADS，而下面已经 set -a
-    # 加载过 hindsight.env（里面有 OMP_NUM_THREADS=2），普通 nproc 会返回 2，
-    # 于是「配置 2 核 >= 本机 2 核」被误判成不限制。实测踩过。
-    local ncpu
-    ncpu=$(nproc --all 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo 0)
-    ncpu=$((10#${ncpu:-0}))
-    [ "$ncpu" -ge 1 ] 2>/dev/null || return 0
-    if [ "$cores" -ge "$ncpu" ]; then
-        echo "配置的核数 $cores 不小于本机核数 $ncpu，按不限制运行"
-        return 0
-    fi
-
-    if ! mkdir -p "$CAP_CGROUP" 2>/dev/null; then
-        echo "创建 $CAP_CGROUP 失败，按不限制运行" >&2
-        return 0
-    fi
-    if ! printf '%d 100000\n' "$((cores * 100000))" > "$CAP_CGROUP/cpu.max" 2>/dev/null; then
-        echo "写入 $CAP_CGROUP/cpu.max 失败，按不限制运行" >&2
-        return 0
-    fi
-    if printf '%s\n' "$pid" > "$CAP_CGROUP/cgroup.procs" 2>/dev/null; then
-        echo "CPU 配额：限制到 ${cores}/${ncpu} 核（pid $pid）"
-    else
-        echo "把 pid $pid 移入 $CAP_CGROUP 失败，按不限制运行" >&2
-    fi
-    return 0
-}
 
 is_running() {
     [ -f "$PID_FILE" ] || return 1
@@ -290,37 +242,19 @@ start_service() {
     . "$ENV_FILE"
     set +a
 
-    echo "启动 Hindsight：$VENV_PY (port=${HINDSIGHT_API_PORT}, user=${SVC_USER})"
+    echo "启动 Hindsight：$VENV_PY (port=${HINDSIGHT_API_PORT}, user=$(id -un 2>/dev/null || echo unknown))"
     # 切到应用目录：hindsight-api 会往上层目录找 .env，若在别的目录下启动
     # 会误读无关的 .env（甚至因权限报错），所以固定 cwd
     cd "$APP_HOME" || return 1
 
     # 本脚本以 root 运行（为了设 cgroup CPU 配额），服务进程必须降到包用户，
     # 否则 Python 会带着 root 权限对外提供 REST/MCP 接口。
-    local run_uid run_gid
-    run_uid=$(id -u "$SVC_USER" 2>/dev/null || true)
-    run_gid=$(id -g "$SVC_USER" 2>/dev/null || true)
-    if [ -z "$run_uid" ] || [ -z "$run_gid" ]; then
-        if [ "$(id -u)" = "0" ]; then
-            # 飞牛上以 root 跑却找不到包账号：这是真问题，不能用 root 对外提供接口
-            echo "找不到运行账号 $SVC_USER，拒绝以 root 启动服务" >&2
-            return 1
-        fi
-        # 非 root（CI 冒烟测试等）：本来就没有可降权的目标，直接用当前身份启动
-        echo "找不到运行账号 $SVC_USER，当前非 root，直接以当前身份启动" >&2
-        nohup "$VENV_PY" --host "$HINDSIGHT_API_HOST" --port "$HINDSIGHT_API_PORT" \
-            >> "$LOG_FILE" 2>&1 &
-        echo $! > "$PID_FILE"
-    else
-        # setpriv 用 exec 替换自身，所以 $! 就是 python 的真实 PID（runuser 会留在父进程）
-        nohup setpriv --reuid="$run_uid" --regid="$run_gid" --init-groups \
-            "$VENV_PY" --host "$HINDSIGHT_API_HOST" --port "$HINDSIGHT_API_PORT" \
-            >> "$LOG_FILE" 2>&1 &
-        echo $! > "$PID_FILE"
-    fi
-
-    # 按配置给服务进程设 CPU 配额；失败只告警，不影响启动
-    apply_cpu_cap "$(cat "$PID_FILE" 2>/dev/null || true)"
+    # privilege 是 run-as: package，本脚本已经以应用账号运行，直接启动即可。
+    # （曾经为了设 cgroup CPU 配额改成 root + setpriv 降权，代价是 appcenter 判定不出
+    #   running、详情页一直显示「启用」，已回退。）
+    nohup "$VENV_PY" --host "$HINDSIGHT_API_HOST" --port "$HINDSIGHT_API_PORT" \
+        >> "$LOG_FILE" 2>&1 &
+    echo $! > "$PID_FILE"
 
     # 等健康检查通过（最多 180s，首次启动要建库并加载模型）
     for _ in $(seq 1 90); do
